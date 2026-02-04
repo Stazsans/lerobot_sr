@@ -7,13 +7,16 @@ sweep_config = {
     "metric": {"name": "loss", "goal": "minimize"},
     "parameters":{
         "batch_size":{"values": [8, 16, 32]},
-        "optimizer.lr":{"max": 1e-4, "min": 1e-6},
-        "policy.chunk_size":{"max": 200, "min": 50}
+        "optimizer.lr":{"distribution": "log_uniform_values", "max": 1e-4, "min": 1e-6},
+        "policy.chunk_size":{"distribution": "q_uniform","max": 200, "min": 30,"q": 10},
+        "policy.kl_weight":{"distribution": "log_uniform_values","min": 1,"max": 100},
+        "policy.temporal_ensemble_coeff":{"min":0.005,"max":0.05}
+
     },
     "early_terminate": {
         "type": "hyperband",
         "min_iter": 2,     # Agent 会先跑 min_iter 个单位，一次 log 是一个单位（现在是 2000 个 step）
-        "eta": 2,          # 每次淘汰一半
+        "eta": 3,          # 3 个里面淘汰一个
         },
     "command": [
         "${interpreter}",
@@ -26,7 +29,7 @@ sweep_config = {
         "--policy.push_to_hub=false",
         "--steps=10000",
  #       "--policy.chunk_size=50",
-        "--policy.temporal_ensemble_coeff=0.01",
+ #       "--policy.temporal_ensemble_coeff=0.01",
         "--policy.n_action_steps=1",
         "--save_freq=2000",
         "--dataset.video_backend=pyav",
