@@ -34,7 +34,7 @@ sweep_config = {
         "--save_freq=2000",
         "--dataset.video_backend=pyav",
         "--policy.use_amp=true",
-        "--output_dir=outputs/train/hanoi_sweep/${wandb_run_id}",
+#        "--output_dir=outputs/train/hanoi_sweep/${wandb_run_id}",
         "${args}", 
     ],
 }
