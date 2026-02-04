@@ -2,13 +2,13 @@ import wandb
 
 sweep_config = {
     "name": "lerobot_act_sweep",
+    "program":"/home/sr/PycharmProjects/lerobot_sr/src/lerobot/scripts/lerobot_train.py",
     "method": "bayes",
     "metric": {"name": "loss", "goal": "minimize"},
     "parameters":{
-        "program":"src\lerobot\scripts\lerobot_train.py",
         "batch_size":{"values": [8, 16, 32]},
-        "lr":{"max": 1e-4, "min": 1e-6},
-        "epochs":{"max":40, "min":10},
+        "optimizer.lr":{"max": 1e-4, "min": 1e-6},
+        "policy.chunk_size":{"max": 200, "min": 50}
     },
     "early_terminate": {
         "type": "hyperband",
@@ -24,14 +24,14 @@ sweep_config = {
         "--policy.device=cuda",
         "--wandb.enable=true",
         "--policy.push_to_hub=false",
-        "--steps=100000",
-        "--policy.chunk_size=50",
+        "--steps=10000",
+ #       "--policy.chunk_size=50",
         "--policy.temporal_ensemble_coeff=0.01",
         "--policy.n_action_steps=1",
         "--save_freq=2000",
         "--dataset.video_backend=pyav",
         "--policy.use_amp=true",
-        "--output_dir=outputs/train/hanoi_sweep", 
+        "--output_dir=outputs/train/hanoi_sweep/${wandb_run_id}",
         "${args}", 
     ],
 }
