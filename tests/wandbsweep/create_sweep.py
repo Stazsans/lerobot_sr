@@ -1,6 +1,8 @@
 import wandb
+import time
 from pathlib import Path
 
+# 全用相对路径，方便服务器和本地跑同一份代码
 current_file = Path(__file__).resolve()
 
 PROJECT_ROOT = current_file.parent.parent.parent
@@ -10,6 +12,8 @@ HOME_DIR = Path.home()
 PROGRAM_PATH = str(PROJECT_ROOT / "src/lerobot/scripts/lerobot_train.py")
 DATASET_PATH = str(HOME_DIR / "datasets/hanoi_smallleft2middle")
 
+# 生成一个时间戳，用于 wandb 命名
+unique_tag = f"act_{time.strftime('%m%d_%H%M')}"
 
 sweep_config = {
     "name": "lerobot_act_sweep",
@@ -21,7 +25,8 @@ sweep_config = {
         "optimizer.lr":{"distribution": "log_uniform_values", "max": 1e-4, "min": 1e-6},
         "policy.chunk_size":{"distribution": "q_uniform","max": 200, "min": 50,"q": 10},
         "policy.kl_weight":{"distribution": "log_uniform_values","min": 1,"max": 20},
-        "policy.temporal_ensemble_coeff":{"min":0.005,"max":0.05}
+        "policy.temporal_ensemble_coeff":{"min":0.005,"max":0.05},
+        "wandb.job_name": {"values": [unique_tag]},
 
     },
     "early_terminate": {
@@ -39,11 +44,11 @@ sweep_config = {
         "--policy.device=cuda",
         "--wandb.enable=true",
         "--policy.push_to_hub=false",
-        "--steps=10000",
+        "--steps=200", # 测试一下，之后改回 10000
  #       "--policy.chunk_size=50",
  #       "--policy.temporal_ensemble_coeff=0.01",
         "--policy.n_action_steps=1",
-        "--save_freq=2000",
+        "--save_freq=200",  # 测试一下，之后改回 2000
         "--dataset.video_backend=pyav",
         "--dataset.image_transforms.enable=true",
         "--dataset.image_transforms.max_num_transforms=2",
@@ -51,4 +56,4 @@ sweep_config = {
         "${args}", 
     ],
 }
-sweep_id = wandb.sweep(sweep_config, project="lerobot")
+sweep_id = wandb.sweep(sweep_config, project="sweep")
