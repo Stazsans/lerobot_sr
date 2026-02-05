@@ -26,7 +26,7 @@ sweep_config = {
         "policy.chunk_size":{"distribution": "q_uniform","max": 200, "min": 50,"q": 10},
         "policy.kl_weight":{"distribution": "log_uniform_values","min": 1,"max": 20},
         "policy.temporal_ensemble_coeff":{"min":0.005,"max":0.05},
-        "wandb.job_name": {"values": [unique_tag]},
+#        "wandb.job_name": {"values": [unique_tag]},
 
     },
     "early_terminate": {
