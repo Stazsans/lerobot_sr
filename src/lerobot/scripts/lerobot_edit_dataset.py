@@ -141,6 +141,12 @@ class SplitConfig:
 
 
 @dataclass
+class SplitRangeConfig:
+    type: str = "split_range"
+    splits: dict[str, float | list[int]] | None = None
+
+
+@dataclass
 class MergeConfig:
     type: str = "merge"
     repo_ids: list[str] | None = None
@@ -180,6 +186,7 @@ class EditDatasetConfig:
     operation: (
         DeleteEpisodesConfig
         | SplitConfig
+        | SplitRangeConfig
         | MergeConfig
         | RemoveFeatureConfig
         | ModifyTasksConfig
@@ -263,6 +270,53 @@ def handle_split(cfg: EditDatasetConfig) -> None:
         if cfg.push_to_hub:
             logging.info(f"Pushing {split_name} split to hub as {split_repo_id}")
             LeRobotDataset(split_ds.repo_id, root=split_ds.root).push_to_hub()
+
+# 新增的按范围切数据集
+def handle_split_range(cfg: EditDatasetConfig) -> None:
+    if not isinstance(cfg.operation, SplitRangeConfig):
+        raise ValueError("Operation config must be SplitRangeConfig")
+
+    dataset = LeRobotDataset(cfg.repo_id, root=cfg.root)
+
+
+    manual_ranges = [
+        (0, 49),    
+        (49, 99),   
+        (99, 149),  
+        (149, 199),
+        (199, 249),
+        (249, 299),
+        (299, 349)  
+    ]
+
+    custom_splits = {}
+    for start, end in manual_ranges:
+        # 简单边界检查
+        if start >= dataset.meta.total_episodes:
+            continue
+        
+        # 确保 end 不会超过总集数
+        actual_end = min(end, dataset.meta.total_episodes)
+        
+        # 构造 split 名称
+        split_name = f"split_{start}_{actual_end}"
+        
+        # 直接利用 range 的左闭右开特性
+        custom_splits[split_name] = list(range(start, actual_end))
+
+    logging.info(f"Manual splits defined: {list(custom_splits.keys())}")
+    
+    # 和以前一样调用 split_dataset 函数，传入自定义的 splits dict
+    split_datasets = split_dataset(dataset, splits=custom_splits)
+
+
+    for split_name, split_ds in split_datasets.items():
+        split_repo_id = f"{cfg.repo_id}_{split_name}"
+        logging.info(f"{split_name}: {split_ds.meta.total_episodes} episodes")
+
+        if cfg.push_to_hub:
+            logging.info(f"Pushing {split_name} split to hub as {split_repo_id}")
+            LeRobotDataset(split_ds.repo_id, root=split_ds.root).push_to_hub()            
 
 
 def handle_merge(cfg: EditDatasetConfig) -> None:
