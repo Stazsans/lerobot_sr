@@ -114,7 +114,7 @@ class TrainPipelineConfig(HubMixin):
             if self.env is None:
                 self.job_name = f"{self.policy.type}_{dt.datetime.now():%H%M%S}"
             else:
-                self.job_name = f"{self.env.type}_{self.policy.type_{dt.datetime.now():%H%M%S}"
+                self.job_name = f"{self.env.type}_{self.policy.type}_{dt.datetime.now():%H%M%S}"
 
         if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
             raise FileExistsError(
