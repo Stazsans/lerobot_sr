@@ -150,20 +150,31 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         self.lerobot_features = policy_specs.lerobot_features
         self.actions_per_chunk = policy_specs.actions_per_chunk
         start = time.perf_counter()
-        # Load preprocessor and postprocessor, overriding device to match requested device
-        device_override = {"device": self.device}
-        self.policy = PreTrainedConfig.from_pretrained(policy_specs.pretrained_name_or_path,
-                                                       device_override=device_override)
-        ds_meta = LeRobotDatasetMetadata(policy_specs.pretrained_name_or_path)
-        self.policy = make_policy(self.policy, ds_meta)
+
+        pretrained_path = policy_specs.pretrained_name_or_path
+
+        # 加载配置（支持 overrides）
+        policy_cfg = PreTrainedConfig.from_pretrained(pretrained_path)
+        policy_cfg.pretrained_path = pretrained_path
+
+        # 获取数据集元数据，注意此项改动后，权重所在文件夹需要复制数据集的 mata 文件
+
+        ds_meta = LeRobotDatasetMetadata(pretrained_path)
+        self.logger.info(f"Loading policy {policy_cfg.type} from {pretrained_path}")
+
+        self.policy = make_policy(policy_cfg, ds_meta=ds_meta)
+        self.policy.to(policy_specs.device)
+        self.device = policy_specs.device
+
         self.preprocessor, self.postprocessor = make_pre_post_processors(
-            self.policy.config,
-            pretrained_path=policy_specs.pretrained_name_or_path,
+            policy_cfg=policy_cfg,
+            pretrained_path=pretrained_path,
             preprocessor_overrides={
-                "device_processor": device_override,
-                "rename_observations_processor": {"rename_map": policy_specs.rename_map},
+                "device_processor": {"device": self.device}
             },
-            postprocessor_overrides={"device_processor": device_override},
+            postprocessor_overrides={
+                "device_processor": {"device": self.device}
+            }
         )
         end = time.perf_counter()
 
