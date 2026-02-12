@@ -38,7 +38,8 @@ import draccus
 import grpc
 import torch
 
-from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.policies.factory import get_policy_class, make_pre_post_processors, make_policy
 from lerobot.processor import (
     PolicyAction,
     PolicyProcessorPipeline,
@@ -147,25 +148,12 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         self.policy_type = policy_specs.policy_type  # act, pi0, etc.
         self.lerobot_features = policy_specs.lerobot_features
         self.actions_per_chunk = policy_specs.actions_per_chunk
-
-        policy_class = get_policy_class(self.policy_type)
-        from peft import PeftConfig, PeftModel
-
-        logging.info("Loading policy's PEFT adapter.")
-        kwargs = {}
-
-        peft_pretrained_path = policy_specs.pretrained_name_or_path
-        peft_config = PeftConfig.from_pretrained(peft_pretrained_path)
-        kwargs["pretrained_name_or_path"] = peft_config.base_model_name_or_path
-        self.policy = policy_class.from_pretrained(**kwargs)
-        self.policy = PeftModel.from_pretrained(self.policy, peft_pretrained_path, config=peft_config)
-
         start = time.perf_counter()
-        # self.policy = policy_class.from_pretrained(policy_specs.pretrained_name_or_path)
-        self.policy.to(self.device)
-
         # Load preprocessor and postprocessor, overriding device to match requested device
         device_override = {"device": self.device}
+        self.policy = PreTrainedConfig.from_pretrained(policy_specs.pretrained_name_or_path,
+                                                       device_override=device_override)
+        self.policy = make_policy(self.policy)
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
             pretrained_path=policy_specs.pretrained_name_or_path,
@@ -175,7 +163,6 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
             },
             postprocessor_overrides={"device_processor": device_override},
         )
-
         end = time.perf_counter()
 
         self.logger.info(f"Time taken to put policy on {self.device}: {end - start:.4f} seconds")
