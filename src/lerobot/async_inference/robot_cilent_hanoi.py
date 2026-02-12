@@ -82,9 +82,13 @@ from .helpers import (
 from pynput import keyboard
 
 hanoi_steps = [
-    "Transfer the smallest disk from the left pillar to the middle pillar.",
-    "Transfer the medium disk from the left pillar to the right pillar.",
-    "Transfer the small disk from the middle pillar to the right pillar."
+    "Transfer the top disk from the left pillar to the middle pillar.",
+    "Transfer the top disk from the left pillar to the right pillar.",
+    "Transfer the top disk from the middle pillar to the right pillar.",
+    "Transfer the top disk from the left pillar to the middle pillar.",
+    "Transfer the top disk from the right pillar to the left pillar.",
+    "Transfer the top disk from the right pillar to the middle pillar.",
+    "Transfer the top disk from the left pillar to the middle pillar."
 ]
 
 class RobotClient:
