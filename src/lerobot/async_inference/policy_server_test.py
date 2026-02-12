@@ -50,6 +50,7 @@ from lerobot.transport import (
 )
 from lerobot.transport.utils import receive_bytes_in_chunks
 
+from src.lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from .configs import PolicyServerConfig
 from .constants import SUPPORTED_POLICIES
 from .helpers import (
@@ -153,7 +154,8 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         device_override = {"device": self.device}
         self.policy = PreTrainedConfig.from_pretrained(policy_specs.pretrained_name_or_path,
                                                        device_override=device_override)
-        self.policy = make_policy(self.policy)
+        ds_meta = LeRobotDatasetMetadata(policy_specs.pretrained_name_or_path)
+        self.policy = make_policy(self.policy, ds_meta)
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
             pretrained_path=policy_specs.pretrained_name_or_path,
