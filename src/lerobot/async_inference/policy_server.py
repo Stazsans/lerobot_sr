@@ -425,7 +425,7 @@ def serve(cfg: PolicyServerConfig):
     policy_server = PolicyServer(cfg)
 
     # Setup and start gRPC server
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=8))
     services_pb2_grpc.add_AsyncInferenceServicer_to_server(policy_server, server)
     server.add_insecure_port(f"{cfg.host}:{cfg.port}")
 
