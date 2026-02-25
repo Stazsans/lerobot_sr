@@ -81,7 +81,7 @@ from .helpers import (
 )
 from pynput import keyboard
 
-hanoi_steps = [
+hanoi_steps_smolvla = [
     "Transfer the top disk from the left pillar to the middle pillar.",
     "Transfer the top disk from the left pillar to the right pillar.",
     "Transfer the top disk from the middle pillar to the right pillar.",
@@ -89,6 +89,15 @@ hanoi_steps = [
     "Transfer the top disk from the right pillar to the left pillar.",
     "Transfer the top disk from the right pillar to the middle pillar.",
     "Transfer the top disk from the left pillar to the middle pillar."
+]
+act_ck_path = [
+    "/home/sr/outputs/train/hanoi_3_step1/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step2/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step3/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step1/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step5/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step6/checkpoints/012000/pretrained_model",
+    "/home/sr/outputs/train/hanoi_3_step1/checkpoints/012000/pretrained_model"
 ]
 
 class RobotClient:
@@ -158,7 +167,16 @@ class RobotClient:
                 self.task_index += 1
                 self.logger.info("执行下一任务" + str(self.task_index))
                 if self.policy_config.policy_type == "act":
-                    self.policy_config.pretrained_name_or_path = "xxx" # TODO
+                    # self.stop()
+                    self.policy_config.pretrained_name_or_path = act_ck_path[self.task_index]
+                    if self.task_index == 2:
+                        self.fps_tracker = FPSTracker(target_fps=45)
+                    elif self.task_index == 5 or self.task_index == 6:
+                        self.fps_tracker = FPSTracker(target_fps=15)
+                    else:
+                        self.fps_tracker = FPSTracker(target_fps=self.config.fps)
+                    with self.action_queue_lock:
+                        self.action_queue = Queue()
                     self.start()
             if key == keyboard.Key.left:
                 self.task_index -= 1
@@ -505,7 +523,7 @@ class RobotClient:
             if self._ready_to_send_observation():
                 _captured_observation = self.control_loop_observation(task, verbose)
 
-            task = hanoi_steps[self.task_index]
+            task = hanoi_steps_smolvla[self.task_index]
 
             loop_num += 1
             if loop_num%20 == 0:
