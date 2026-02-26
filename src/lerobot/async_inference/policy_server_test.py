@@ -50,7 +50,7 @@ from lerobot.transport import (
 )
 from lerobot.transport.utils import receive_bytes_in_chunks
 
-from src.lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 from .configs import PolicyServerConfig
 from .constants import SUPPORTED_POLICIES
 from .helpers import (
@@ -152,6 +152,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         start = time.perf_counter()
 
         pretrained_path = policy_specs.pretrained_name_or_path
+        print(f"DEBUG: Loading model from path: '{pretrained_path}'")
 
         # 加载配置（支持 overrides）
         policy_cfg = PreTrainedConfig.from_pretrained(pretrained_path)
