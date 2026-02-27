@@ -17,7 +17,7 @@ class SR0Config(RobotConfig):
     right_arm_config: SOFollowerConfig
 
     # TODO 底盘配置
-    classics_config = None
+    # classics_config = None
 
     # TODO 三视角摄像头配置
     top_camera_config: CameraConfig

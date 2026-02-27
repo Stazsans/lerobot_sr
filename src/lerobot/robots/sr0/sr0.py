@@ -1,4 +1,8 @@
+import logging
+from functools import cached_property
+
 from lerobot.cameras import Camera
+from lerobot.processor import RobotObservation, RobotAction
 from lerobot.robots import Robot
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
 from lerobot.robots.sr0.config_sr0 import SR0Config
@@ -24,3 +28,37 @@ class SR0(Robot):
         self.top_camera = Camera()
 
         self.camera = {**self.left_arm.cameras, **self.right_arm.cameras, **self.top_camera}
+
+    # TODO 继承 Robot 父类方法
+
+    @cached_property
+    def observation_features(self) -> dict:
+        return {}
+
+    @cached_property
+    def action_features(self) -> dict:
+        return {}
+
+    @property
+    def is_conected(self) -> bool:
+        return True
+
+    @property
+    def is_disconnected(self) -> bool:
+        return False
+
+    def get_observation(self) -> RobotObservation:
+        return RobotObservation()
+
+    def send_action(self, action: RobotAction) -> RobotAction:
+        return RobotAction(action)
+
+    def connect(self, calibrate=True):
+        self.left_arm.connect()
+        self.right_arm.connect()
+        self.top_camera.connect()
+
+    def disconnect(self):
+        self.left_arm.disconnect()
+        self.right_arm.disconnect()
+        self.top_camera.disconnect()
