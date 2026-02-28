@@ -1,7 +1,7 @@
 import logging
 from functools import cached_property
 
-from lerobot.cameras import Camera
+from lerobot.cameras import Camera, make_cameras_from_configs
 from lerobot.processor import RobotObservation, RobotAction
 from lerobot.robots import Robot
 from lerobot.robots.so_follower import SOFollowerRobotConfig, SOFollower
@@ -24,10 +24,10 @@ class SR0(Robot):
         self.left_arm = SOFollower(left_arm_config)
         self.right_arm = SOFollower(right_arm_config)
 
-        # TODO 三视角摄像头
-        self.top_camera = Camera()
+        # 基座摄像头
+        self.base_cameras = make_cameras_from_configs(config.base_cameras_config)
 
-        self.camera = {**self.left_arm.cameras, **self.right_arm.cameras, **self.top_camera}
+        self.camera = {**self.left_arm.cameras, **self.right_arm.cameras, **self.base_cameras}
 
     # TODO 继承 Robot 父类方法
 

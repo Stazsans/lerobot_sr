@@ -19,8 +19,8 @@ class SR0Config(RobotConfig):
     # TODO 底盘配置
     # classics_config = None
 
-    # TODO 三视角摄像头配置
-    top_camera_config: CameraConfig
+    # TODO 基座视角摄像头配置，是否需要默认值
+    base_cameras_config: dict[str, CameraConfig]
 
     # TODO 机械臂基坐标系相对于底盘基坐标系的位置，可能会用到
     # left_arm_position = None
