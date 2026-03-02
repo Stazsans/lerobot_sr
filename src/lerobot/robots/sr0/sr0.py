@@ -13,6 +13,9 @@ class SR0(Robot):
     config_class = SR0Config
     name = "SR0"
 
+    # TODO 使用配置文件，减少终端命令长度
+    config_path = "./sr0.yaml"
+
     def __init__(self, config: SR0Config):
         super().__init__(config)
         self.config = config
