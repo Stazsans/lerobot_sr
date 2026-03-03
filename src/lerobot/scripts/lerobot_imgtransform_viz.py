@@ -83,11 +83,21 @@ def save_each_transform(cfg: ImageTransformsConfig, original_frame, output_dir, 
         tf_cfg_kwgs_max = deepcopy(tf_cfg.kwargs)
         tf_cfg_kwgs_avg = deepcopy(tf_cfg.kwargs)
 
-        for key, (min_, max_) in tf_cfg.kwargs.items():
-            avg = (min_ + max_) / 2
-            tf_cfg_kwgs_min[key] = [min_, min_]
-            tf_cfg_kwgs_max[key] = [max_, max_]
-            tf_cfg_kwgs_avg[key] = [avg, avg]
+        for key, value in tf_cfg.kwargs.items():
+            # 只有当值是长度为 2 的列表或元组时，才进行拆解和范围缩减
+            if isinstance(value, (list, tuple)) and len(value) == 2:
+                min_, max_ = value
+                # 注意：有些参数可能是整数（如 kernel_size），平均值可能需要取整，
+                # 但对于大多数增广参数（亮度、对比度），浮点数是正常的。
+                avg = (min_ + max_) / 2
+
+                tf_cfg_kwgs_min[key] = [min_, min_]
+                tf_cfg_kwgs_max[key] = [max_, max_]
+                tf_cfg_kwgs_avg[key] = [avg, avg]
+            else:
+                # 如果是单个数值（int, float, bool）或不是范围对，
+                # 保持 deepcopy 后的原样，不进行 min/max/avg 处理
+                continue
 
         tf_min = make_transform_from_config(replace(tf_cfg, **{"kwargs": tf_cfg_kwgs_min}))
         tf_max = make_transform_from_config(replace(tf_cfg, **{"kwargs": tf_cfg_kwgs_max}))
