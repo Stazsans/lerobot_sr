@@ -189,7 +189,7 @@ class ImageTransformsConfig:
             "contrast": ImageTransformConfig(
                 weight=1.0,
                 type="ColorJitter",
-                kwargs={"contrast": (0.8, 1.2)},
+                kwargs={"contrast": (0.8, 1.8)}, # 范围调大，默认是 (0.8, 1.2）
             ),
             "saturation": ImageTransformConfig(
                 weight=1.0,
@@ -204,23 +204,28 @@ class ImageTransformsConfig:
             "sharpness": ImageTransformConfig(
                 weight=1.0,
                 type="SharpnessJitter",
-                kwargs={"sharpness": (0.5, 1.5)},
+                kwargs={"sharpness": (0.8, 1.8)}, # 范围调大，默认是 (0.5, 1.5)
             ),
-            "affine": ImageTransformConfig(
-                weight=1.0,
-                type="RandomAffine",
-                kwargs={"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
-            ),
+            # 先去掉，可能导致 action 对不上。
+            # "affine": ImageTransformConfig(
+            #     weight=1.0,
+            #     type="RandomAffine",
+            #     kwargs={"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
+            # ),
             # 新增两种变换：通道变换和灰度变换
             # TODO：这俩实际上应该是互斥的，目前这样会在同时取的时候导致全为灰度图，之后再优化
-            "channel_permutation": ImageTransformConfig(
+            # "channel_permutation": ImageTransformConfig(
+            #     weight=2.0,
+            #     type="RandomChannelPermutation",
+            # ),
+            # "grayscale": ImageTransformConfig(
+            #     weight=2.0,
+            #     type="Grayscale",
+            #     kwargs={"num_output_channels": 3},   # 不改变通道数，保持输出为3通道
+            "channelorgrayscale": ImageTransformConfig(
                 weight=2.0,
-                type="RandomChannelPermutation",
-            ),
-            "grayscale": ImageTransformConfig(
-                weight=2.0,
-                type="Grayscale",
-                kwargs={"num_output_channels": 3},   # 不改变通道数，保持输出为3通道
+                type="channelorgrayscale",
+
             ),
         }
     )
@@ -233,12 +238,17 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
-    elif cfg.type == "RandomAffine":
-        return v2.RandomAffine(**cfg.kwargs)
-    elif cfg.type == "RandomChannelPermutation":  # 新增管道变换
-        return v2.RandomChannelPermutation(**cfg.kwargs)
-    elif cfg.type == "Grayscale":  # 新增灰度变换
-        return v2.Grayscale(**cfg.kwargs)
+    # elif cfg.type == "RandomAffine":
+    #     return v2.RandomAffine(**cfg.kwargs)
+    # elif cfg.type == "RandomChannelPermutation":  # 新增管道变换
+    #     return v2.RandomChannelPermutation(**cfg.kwargs)
+    # elif cfg.type == "Grayscale":  # 新增灰度变换
+    #     return v2.Grayscale(**cfg.kwargs)
+    elif cfg.type == "channelorgrayscale":  # 新增随机通道变换或灰度变换
+        return v2.RandomChoice([
+            v2.RandomChannelPermutation(),
+            v2.Grayscale(num_output_channels=3)
+        ], p=[0.5, 0.5])
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
