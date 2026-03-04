@@ -184,7 +184,7 @@ class ImageTransformsConfig:
             "brightness": ImageTransformConfig(
                 weight=1.0,
                 type="ColorJitter",
-                kwargs={"brightness": (0.8, 1.2)},
+                kwargs={"brightness": (0.6, 1.4)},
             ),
             "contrast": ImageTransformConfig(
                 weight=1.0,
@@ -194,17 +194,17 @@ class ImageTransformsConfig:
             "saturation": ImageTransformConfig(
                 weight=1.0,
                 type="ColorJitter",
-                kwargs={"saturation": (0.5, 1.5)},
+                kwargs={"saturation": (0, 1.5)},
             ),
             "hue": ImageTransformConfig(
                 weight=1.0,
                 type="ColorJitter",
-                kwargs={"hue": (-0.05, 0.05)},
+                kwargs={"hue": (-0.3, 0.3)},
             ),
             "sharpness": ImageTransformConfig(
                 weight=1.0,
                 type="SharpnessJitter",
-                kwargs={"sharpness": (0.8, 1.8)}, # 范围调大，默认是 (0.5, 1.5)
+                kwargs={"sharpness": (0.5, 2.0)}, # 范围调大，默认是 (0.5, 1.5)
             ),
             # 先去掉，可能导致 action 对不上。
             # "affine": ImageTransformConfig(
@@ -226,6 +226,17 @@ class ImageTransformsConfig:
                 weight=2.0,
                 type="channelorgrayscale",
 
+            ),
+            "autocontrast": ImageTransformConfig(
+                weight=1.0,
+                type="RandomAutocontrast",
+                kwargs={"p":1.0},
+            ),
+            # --- 直方图均衡化：进一步增强局部边缘对比度 ---
+            "equalize": ImageTransformConfig(
+                weight=1.0,
+                type="RandomEqualize",
+                kwargs={"p":1.0},
             ),
         }
     )
@@ -249,6 +260,10 @@ def make_transform_from_config(cfg: ImageTransformConfig):
             v2.RandomChannelPermutation(),
             v2.Grayscale(num_output_channels=3)
         ], p=[0.5, 0.5])
+    elif cfg.type == "RandomEqualize":
+        return v2.RandomEqualize(**cfg.kwargs)
+    elif cfg.type == "RandomAutocontrast":
+        return v2.RandomAutocontrast(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
