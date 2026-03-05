@@ -280,38 +280,36 @@ class RobotClient:
             def aggregate_fn(x1, x2):
                 return x2
 
-        future_action_queue = Queue()
         with self.action_queue_lock:
-            internal_queue = self.action_queue.queue
+            # Snapshot current queue contents and latest action while holding the lock
+            current_action_queue = {action.get_timestep(): action.get_action() for action in self.action_queue.queue}
 
-        current_action_queue = {action.get_timestep(): action.get_action() for action in internal_queue}
-
-        for new_action in incoming_actions:
             with self.latest_action_lock:
                 latest_action = self.latest_action
 
-            # New action is older than the latest action in the queue, skip it
-            if new_action.get_timestep() <= latest_action:
-                continue
+            future_action_queue = Queue()
+            for new_action in incoming_actions:
+                # New action is older than the latest action in the queue, skip it
+                if new_action.get_timestep() <= latest_action:
+                    continue
 
-            # If the new action's timestep is not in the current action queue, add it directly
-            elif new_action.get_timestep() not in current_action_queue:
-                future_action_queue.put(new_action)
-                continue
+                # If the new action's timestep is not in the current action queue, add it directly
+                elif new_action.get_timestep() not in current_action_queue:
+                    future_action_queue.put(new_action)
+                    continue
 
-            # If the new action's timestep is in the current action queue, aggregate it
-            # TODO: There is probably a way to do this with broadcasting of the two action tensors
-            future_action_queue.put(
-                TimedAction(
-                    timestamp=new_action.get_timestamp(),
-                    timestep=new_action.get_timestep(),
-                    action=aggregate_fn(
-                        current_action_queue[new_action.get_timestep()], new_action.get_action()
-                    ),
+                # If the new action's timestep is in the current action queue, aggregate it
+                # TODO: There is probably a way to do this with broadcasting of the two action tensors
+                future_action_queue.put(
+                    TimedAction(
+                        timestamp=new_action.get_timestamp(),
+                        timestep=new_action.get_timestep(),
+                        action=aggregate_fn(
+                            current_action_queue[new_action.get_timestep()], new_action.get_action()
+                        ),
+                    )
                 )
-            )
 
-        with self.action_queue_lock:
             self.action_queue = future_action_queue
 
     def receive_actions(self, verbose: bool = False):
