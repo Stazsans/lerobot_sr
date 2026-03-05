@@ -38,6 +38,7 @@ import draccus
 import grpc
 import torch
 
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import get_policy_class, make_pre_post_processors
 from lerobot.processor import (
     PolicyAction,
@@ -148,17 +149,38 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         self.lerobot_features = policy_specs.lerobot_features
         self.actions_per_chunk = policy_specs.actions_per_chunk
 
+        pretrained_path = policy_specs.pretrained_name_or_path
         policy_class = get_policy_class(self.policy_type)
 
         start = time.perf_counter()
-        self.policy = policy_class.from_pretrained(policy_specs.pretrained_name_or_path)
+
+        # Check if the model uses PEFT by loading the config first
+        policy_cfg = PreTrainedConfig.from_pretrained(pretrained_path)
+
+        if policy_cfg.use_peft:
+            from peft import PeftConfig, PeftModel
+
+            self.logger.info("Loading PEFT adapter model.")
+            peft_config = PeftConfig.from_pretrained(pretrained_path)
+            base_model_path = peft_config.base_model_name_or_path
+            if not base_model_path:
+                raise ValueError(
+                    "No base model path found in PEFT adapter config. "
+                    "Cannot load the base policy model."
+                )
+            self.logger.info(f"Base model path: {base_model_path}")
+            self.policy = policy_class.from_pretrained(base_model_path)
+            self.policy = PeftModel.from_pretrained(self.policy, pretrained_path, config=peft_config)
+        else:
+            self.policy = policy_class.from_pretrained(pretrained_path)
+
         self.policy.to(self.device)
 
         # Load preprocessor and postprocessor, overriding device to match requested device
         device_override = {"device": self.device}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
-            self.policy.config,
-            pretrained_path=policy_specs.pretrained_name_or_path,
+            policy_cfg,
+            pretrained_path=pretrained_path,
             preprocessor_overrides={
                 "device_processor": device_override,
                 "rename_observations_processor": {"rename_map": policy_specs.rename_map},
