@@ -118,7 +118,7 @@ class RobotClient:
         # Initialize client side variables
         self.latest_action_lock = threading.Lock()
         self.latest_action = -1
-        self.action_chunk_size = -1
+        self.action_chunk_size = 1
 
         self._chunk_size_threshold = config.chunk_size_threshold
 
