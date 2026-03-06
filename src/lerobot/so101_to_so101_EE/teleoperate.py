@@ -14,6 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+SO101 EE 位姿空间遥操作脚本。
+
+Leader 关节角度经 FK 转为 EE 位姿指令，再经 IK 转为 follower 关节角度。
+用于验证 FK/IK 管线和硬件连接。
+
+使用前修改以下常量：
+- FOLLOWER_PORT / LEADER_PORT: 串口路径
+"""
+
 import time
 
 from lerobot.model.kinematics import RobotKinematics
@@ -23,45 +33,45 @@ from lerobot.processor.converters import (
     robot_action_to_transition,
     transition_to_robot_action,
 )
-from lerobot.robots.so_follower import SO100Follower, SO100FollowerConfig
+from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     ForwardKinematicsJointsToEE,
     InverseKinematicsEEToJoints,
 )
-from lerobot.teleoperators.so_leader import SO100Leader, SO100LeaderConfig
+from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 
+# ========== 用户配置 ==========
+FOLLOWER_PORT = "/dev/ttyACM0"
+LEADER_PORT = "/dev/ttyACM1"
 FPS = 30
+# ==============================
 
 
 def main():
-    # Initialize the robot and teleoperator config
-    follower_config = SO100FollowerConfig(
-        port="/dev/tty.usbmodem5A460814411", id="my_awesome_follower_arm", use_degrees=True
+    follower_config = SO101FollowerConfig(
+        port=FOLLOWER_PORT, id="so_follower_arm", use_degrees=True
     )
-    leader_config = SO100LeaderConfig(port="/dev/tty.usbmodem5A460819811", id="my_awesome_leader_arm")
+    leader_config = SO101LeaderConfig(port=LEADER_PORT, id="so_leader_arm")
 
-    # Initialize the robot and teleoperator
-    follower = SO100Follower(follower_config)
-    leader = SO100Leader(leader_config)
+    follower = SO101Follower(follower_config)
+    leader = SO101Leader(leader_config)
 
-    # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo: https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
     follower_kinematics_solver = RobotKinematics(
-        urdf_path="./SO101/so101_new_calib.urdf",
+        urdf_path="so101_new_calib.urdf",
         target_frame_name="gripper_frame_link",
         joint_names=list(follower.bus.motors.keys()),
     )
 
-    # NOTE: It is highly recommended to use the urdf in the SO-ARM100 repo: https://github.com/TheRobotStudio/SO-ARM100/blob/main/Simulation/SO101/so101_new_calib.urdf
     leader_kinematics_solver = RobotKinematics(
-        urdf_path="./SO101/so101_new_calib.urdf",
+        urdf_path="so101_new_calib.urdf",
         target_frame_name="gripper_frame_link",
         joint_names=list(leader.bus.motors.keys()),
     )
 
-    # Build pipeline to convert teleop joints to EE action
+    # FK: leader 关节 → EE 动作
     leader_to_ee = RobotProcessorPipeline[RobotAction, RobotAction](
         steps=[
             ForwardKinematicsJointsToEE(
@@ -72,7 +82,7 @@ def main():
         to_output=transition_to_robot_action,
     )
 
-    # build pipeline to convert EE action to robot joints
+    # IK: EE 动作 → follower 关节
     ee_to_follower_joints = RobotProcessorPipeline[tuple[RobotAction, RobotObservation], RobotAction](
         [
             EEBoundsAndSafety(
@@ -89,33 +99,23 @@ def main():
         to_output=transition_to_robot_action,
     )
 
-    # Connect to the robot and teleoperator
     follower.connect()
     leader.connect()
 
-    # Init rerun viewer
-    init_rerun(session_name="so100_so100_EE_teleop")
+    init_rerun(session_name="so101_ee_teleop")
 
     print("Starting teleop loop...")
     while True:
         t0 = time.perf_counter()
 
-        # Get robot observation
         robot_obs = follower.get_observation()
-
-        # Get teleop observation
         leader_joints_obs = leader.get_action()
 
-        # teleop joints -> teleop EE action
         leader_ee_act = leader_to_ee(leader_joints_obs)
-
-        # teleop EE -> robot joints
         follower_joints_act = ee_to_follower_joints((leader_ee_act, robot_obs))
 
-        # Send action to robot
         _ = follower.send_action(follower_joints_act)
 
-        # Visualize
         log_rerun_data(observation=leader_ee_act, action=follower_joints_act)
 
         precise_sleep(max(1.0 / FPS - (time.perf_counter() - t0), 0.0))
