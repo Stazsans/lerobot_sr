@@ -71,15 +71,15 @@ from lerobot.transport.utils import grpc_channel_options, send_bytes_in_chunks
 
 # ========== 用户配置 ==========
 FOLLOWER_PORT = "/dev/ttyACM0"
-CAMERA_INDEXES = {"camera1": 2, "camera2": 4}
+CAMERA_INDEXES = {"camera1": 3, "camera2": 5}
 
-MODEL_PATH = "./outputs/act_so101_ee/checkpoints/last/pretrained_model"
+MODEL_PATH = "/home/sr/outputs/train/hanoi_ee_step1/checkpoints/016000/pretrained_model"
 POLICY_TYPE = "act"
-SERVER_ADDRESS = "127.0.0.1:8080"
+SERVER_ADDRESS = "192.168.10.73:8080"
 
-FPS = 30
-ACTIONS_PER_CHUNK = 50
-CHUNK_SIZE_THRESHOLD = 0.5
+FPS = 15
+ACTIONS_PER_CHUNK = 150
+CHUNK_SIZE_THRESHOLD = 0.8
 TASK_DESCRIPTION = "Transfer the top disk from the left pillar to the right pillar."
 
 POLICY_DEVICE = "cuda"
@@ -180,10 +180,20 @@ class EEAsyncEvaluator:
                 # 获取当前关节观测（IK 需要）
                 robot_obs = self.robot.get_observation()
 
+                # FK: 当前关节 → 当前 EE（用于对比）
+                current_ee = self.fk_processor(robot_obs.copy())
+
                 # IK: EE → 关节
                 joint_action = self.ik_processor((ee_action, robot_obs))
 
                 self.robot.send_action(joint_action)
+
+                # 打印目标 EE vs 当前 EE，定位偏移轴
+                print(
+                    f"target x={ee_action['ee.x']:+.4f}  y={ee_action['ee.y']:+.4f}  z={ee_action['ee.z']:+.4f} | "
+                    f"actual x={current_ee['ee.x']:+.4f}  y={current_ee['ee.y']:+.4f}  z={current_ee['ee.z']:+.4f} | "
+                    f"diff  x={ee_action['ee.x']-current_ee['ee.x']:+.4f}  y={ee_action['ee.y']-current_ee['ee.y']:+.4f}  z={ee_action['ee.z']-current_ee['ee.z']:+.4f}"
+                )
 
                 with self.latest_action_lock:
                     self.latest_action = timed_action.get_timestep()
@@ -233,7 +243,7 @@ class EEAsyncEvaluator:
 def main():
     # 配置摄像头和机器人
     camera_config = {
-        name: OpenCVCameraConfig(index_or_path=idx, width=640, height=480, fps=FPS)
+        name: OpenCVCameraConfig(index_or_path=idx, width=640, height=480, fps=30)
         for name, idx in CAMERA_INDEXES.items()
     }
     follower_config = SO101FollowerConfig(
@@ -245,7 +255,7 @@ def main():
     robot = SO101Follower(follower_config)
 
     kinematics_solver = RobotKinematics(
-        urdf_path="so101_new_calib.urdf",
+        urdf_path="/home/sr/SO-ARM100/Simulation/SO101",
         target_frame_name="gripper_frame_link",
         joint_names=list(robot.bus.motors.keys()),
     )
@@ -271,7 +281,7 @@ def main():
             InverseKinematicsEEToJoints(
                 kinematics=kinematics_solver,
                 motor_names=list(robot.bus.motors.keys()),
-                initial_guess_current_joints=True,
+                initial_guess_current_joints=False,
             ),
         ],
         to_transition=robot_action_observation_to_transition,

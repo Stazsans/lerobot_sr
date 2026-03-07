@@ -226,8 +226,8 @@ class EEBoundsAndSafety(RobotActionProcessorStep):
             dpos = pos - self._last_pos
             n = float(np.linalg.norm(dpos))
             if n > self.max_ee_step_m and n > 0:
+                print(f"WARNING: EE jump {n:.3f}m > {self.max_ee_step_m}m, clamping.")
                 pos = self._last_pos + dpos * (self.max_ee_step_m / n)
-                raise ValueError(f"EE jump {n:.3f}m > {self.max_ee_step_m}m")
 
         self._last_pos = pos
 
