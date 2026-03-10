@@ -83,6 +83,16 @@ CHUNK_SIZE_THRESHOLD = 0.8
 TASK_DESCRIPTION = "Transfer the top disk from the left pillar to the right pillar."
 
 POLICY_DEVICE = "cuda"
+
+# EE 偏移补偿（用于校正模型推理的系统性偏差）
+# 位移偏移 (米)
+EE_OFFSET_X = 0.0    # 正值=向前, 负值=向后
+EE_OFFSET_Y = 0.0    # 正值=向左, 负值=向右
+EE_OFFSET_Z = 0.0    # 正值=向上, 负值=向下
+# 角度偏移 (弧度)
+EE_OFFSET_WX = 0.0
+EE_OFFSET_WY = 0.0
+EE_OFFSET_WZ = 0.0
 # ==============================
 
 EE_KEYS = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"]
@@ -109,7 +119,7 @@ class EEAsyncEvaluator:
 
         self.action_queue = Queue()
         self.action_chunk_size = ACTIONS_PER_CHUNK
-        self.latest_action = -1
+        self.latest_action = 1
         self.latest_action_lock = threading.Lock()
         self.shutdown_event = threading.Event()
         self.must_go = threading.Event()
@@ -176,6 +186,14 @@ class EEAsyncEvaluator:
                 # EE 动作张量 → EE 动作字典
                 action_tensor = timed_action.get_action()
                 ee_action = {key: action_tensor[i].item() for i, key in enumerate(EE_KEYS)}
+
+                # 应用 EE 偏移补偿
+                ee_action["ee.x"] += EE_OFFSET_X
+                ee_action["ee.y"] += EE_OFFSET_Y
+                ee_action["ee.z"] += EE_OFFSET_Z
+                ee_action["ee.wx"] += EE_OFFSET_WX
+                ee_action["ee.wy"] += EE_OFFSET_WY
+                ee_action["ee.wz"] += EE_OFFSET_WZ
 
                 # 获取当前关节观测（IK 需要）
                 robot_obs = self.robot.get_observation()
@@ -281,7 +299,7 @@ def main():
             InverseKinematicsEEToJoints(
                 kinematics=kinematics_solver,
                 motor_names=list(robot.bus.motors.keys()),
-                initial_guess_current_joints=False,
+                initial_guess_current_joints=True,
             ),
         ],
         to_transition=robot_action_observation_to_transition,

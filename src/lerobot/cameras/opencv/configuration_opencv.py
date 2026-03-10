@@ -55,6 +55,8 @@ class OpenCVCameraConfig(CameraConfig):
         - Only 3-channel color output (RGB/BGR) is currently supported.
         - FOURCC codes must be 4-character strings (e.g., "MJPG", "YUYV"). Some common FOUCC codes: https://learn.microsoft.com/en-us/windows/win32/medfound/video-fourccs#fourcc-constants
         - Setting FOURCC can help achieve higher frame rates on some cameras.
+        - calibration_file: Path to a JSON file with camera calibration parameters
+          (from calibrate.py). When set, captured frames are automatically undistorted.
     """
 
     index_or_path: int | Path
@@ -62,6 +64,7 @@ class OpenCVCameraConfig(CameraConfig):
     rotation: Cv2Rotation = Cv2Rotation.NO_ROTATION
     warmup_s: int = 1
     fourcc: str | None = None
+    calibration_file: str | None = None
 
     def __post_init__(self) -> None:
         if self.color_mode not in (ColorMode.RGB, ColorMode.BGR):

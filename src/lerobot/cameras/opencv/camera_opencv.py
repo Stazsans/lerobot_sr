@@ -119,6 +119,9 @@ class OpenCVCamera(Camera):
         self.rotation: int | None = get_cv2_rotation(config.rotation)
         self.backend: int = get_cv2_backend()
 
+        self._undistort_map1: NDArray[Any] | None = None
+        self._undistort_map2: NDArray[Any] | None = None
+
         if self.height and self.width:
             self.capture_width, self.capture_height = self.width, self.height
             if self.rotation in [cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_90_COUNTERCLOCKWISE]:
@@ -165,6 +168,7 @@ class OpenCVCamera(Camera):
             )
 
         self._configure_capture_settings()
+        self._load_calibration()
         self._start_read_thread()
 
         if warmup and self.warmup_s > 0:
@@ -282,6 +286,21 @@ class OpenCVCamera(Camera):
             raise RuntimeError(
                 f"{self} failed to set capture_height={self.capture_height} ({actual_height=}, {height_success=})."
             )
+
+    def _load_calibration(self) -> None:
+        """Loads calibration parameters and pre-computes undistortion maps."""
+        if self.config.calibration_file is None:
+            return
+
+        from .calibrate import compute_undistort_maps, load_calibration
+
+        calib = load_calibration(self.config.calibration_file)
+        image_size = (self.capture_width, self.capture_height)
+        self._undistort_map1, self._undistort_map2 = compute_undistort_maps(calib, image_size)
+        logger.info(
+            f"{self} loaded calibration: model={calib['model_type']}, "
+            f"error={calib['reprojection_error']:.4f}px"
+        )
 
     @staticmethod
     def find_cameras() -> list[dict[str, Any]]:
@@ -418,6 +437,9 @@ class OpenCVCamera(Camera):
 
         if c != 3:
             raise RuntimeError(f"{self} frame channels={c} do not match expected 3 channels (RGB/BGR).")
+
+        if self._undistort_map1 is not None and self._undistort_map2 is not None:
+            image = cv2.remap(image, self._undistort_map1, self._undistort_map2, cv2.INTER_LINEAR)
 
         processed_image = image
         if self.color_mode == ColorMode.RGB:
