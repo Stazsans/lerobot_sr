@@ -206,22 +206,12 @@ class ImageTransformsConfig:
                 type="SharpnessJitter",
                 kwargs={"sharpness": (0.5, 2.0)}, # 范围调大，默认是 (0.5, 1.5)
             ),
-            # 先去掉，可能导致 action 对不上。
-            # "affine": ImageTransformConfig(
-            #     weight=1.0,
-            #     type="RandomAffine",
-            #     kwargs={"degrees": (-5.0, 5.0), "translate": (0.05, 0.05)},
-            # ),
-            # 新增两种变换：通道变换和灰度变换
-            # TODO：这俩实际上应该是互斥的，目前这样会在同时取的时候导致全为灰度图，之后再优化
-            # "channel_permutation": ImageTransformConfig(
-            #     weight=2.0,
-            #     type="RandomChannelPermutation",
-            # ),
-            # "grayscale": ImageTransformConfig(
-            #     weight=2.0,
-            #     type="Grayscale",
-            #     kwargs={"num_output_channels": 3},   # 不改变通道数，保持输出为3通道
+
+            "affine": ImageTransformConfig(
+                weight=2.0,
+                type="RandomAffine",
+                kwargs={"degrees": (-10.0, 10.0), "translate": (0.1, 0.1)},
+            ),
             "channelorgrayscale": ImageTransformConfig(
                 weight=2.0,
                 type="channelorgrayscale",
@@ -249,12 +239,6 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
-    # elif cfg.type == "RandomAffine":
-    #     return v2.RandomAffine(**cfg.kwargs)
-    # elif cfg.type == "RandomChannelPermutation":  # 新增管道变换
-    #     return v2.RandomChannelPermutation(**cfg.kwargs)
-    # elif cfg.type == "Grayscale":  # 新增灰度变换
-    #     return v2.Grayscale(**cfg.kwargs)
     elif cfg.type == "channelorgrayscale":  # 新增随机通道变换或灰度变换
         return v2.RandomChoice([
             v2.RandomChannelPermutation(),
@@ -264,6 +248,8 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.RandomEqualize(**cfg.kwargs)
     elif cfg.type == "RandomAutocontrast":
         return v2.RandomAutocontrast(**cfg.kwargs)
+    elif cfg.type == "RandomAffine":
+        return v2.RandomAffine(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
