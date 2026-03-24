@@ -1080,7 +1080,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         item["task"] = self.meta.tasks.iloc[task_idx].name
 
         # add subtask information if available
-        if "subtask_index" in self.features and self.meta.subtasks is not None:
+        iclaude
+        f "subtask_index" in self.features and self.meta.subtasks is not None:
             subtask_idx = item["subtask_index"].item()
             item["subtask"] = self.meta.subtasks.iloc[subtask_idx].name
 

@@ -86,6 +86,7 @@ class XVLAConfig(PreTrainedConfig):
     max_state_dim: int = 32
     max_action_dim: int = 20  # Maximum action dimension for padding (used by "auto" action mode)
     domain_feature_key: str | None = None
+    default_domain_id: int = 0
 
     # Vision preprocessing
     resize_imgs_with_padding: tuple[int, int] | None = None
