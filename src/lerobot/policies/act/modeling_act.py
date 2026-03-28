@@ -38,6 +38,30 @@ from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.utils.constants import ACTION, OBS_ENV_STATE, OBS_IMAGES, OBS_STATE
 
 
+def get_batch_device(batch: dict[str, Tensor | list[Tensor] | tuple[Tensor, ...]]) -> torch.device:
+    """Infer the device from any tensor present in a policy batch."""
+    for key in (OBS_STATE, OBS_ENV_STATE, ACTION):
+        value = batch.get(key)
+        if isinstance(value, torch.Tensor):
+            return value.device
+
+    images = batch.get(OBS_IMAGES)
+    if isinstance(images, (list, tuple)):
+        for image in images:
+            if isinstance(image, torch.Tensor):
+                return image.device
+
+    for value in batch.values():
+        if isinstance(value, torch.Tensor):
+            return value.device
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, torch.Tensor):
+                    return item.device
+
+    raise ValueError("Unable to infer a device from the batch because it does not contain any tensors.")
+
+
 class ACTPolicy(PreTrainedPolicy):
     """
     Action Chunking Transformer Policy as per Learning Fine-Grained Bimanual Manipulation with Low-Cost
@@ -401,6 +425,8 @@ class ACT(nn.Module):
 
         batch_size = batch[OBS_IMAGES][0].shape[0] if OBS_IMAGES in batch else batch[OBS_ENV_STATE].shape[0]
 
+        batch_device = get_batch_device(batch)
+
         # Prepare the latent for input to the transformer encoder.
         if self.config.use_vae and ACTION in batch and self.training:
             # Prepare the input to the VAE encoder: [cls, *joint_space_configuration, *action_sequence].
@@ -428,7 +454,7 @@ class ACT(nn.Module):
             cls_joint_is_pad = torch.full(
                 (batch_size, 2 if self.config.robot_state_feature else 1),
                 False,
-                device=batch[OBS_STATE].device,
+                device=batch_device,
             )
             key_padding_mask = torch.cat(
                 [cls_joint_is_pad, batch["action_is_pad"]], axis=1
@@ -452,7 +478,7 @@ class ACT(nn.Module):
             mu = log_sigma_x2 = None
             # TODO(rcadene, alexander-soare): remove call to `.to` to speedup forward ; precompute and use buffer
             latent_sample = torch.zeros([batch_size, self.config.latent_dim], dtype=torch.float32).to(
-                batch[OBS_STATE].device
+                batch_device
             )
 
         # Prepare transformer encoder inputs.
