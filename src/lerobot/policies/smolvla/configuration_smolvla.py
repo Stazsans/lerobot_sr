@@ -107,6 +107,9 @@ class SmolVLAConfig(PreTrainedConfig):
     rtc_config: RTCConfig | None = None
     rtc_training_config: RTCTrainingConfig | None = None
 
+    compile_model: bool = False  # Whether to use torch.compile for model optimization
+    compile_mode: str = "max-autotune"  # Torch compile mode
+
     def __post_init__(self):
         super().__post_init__()
 
