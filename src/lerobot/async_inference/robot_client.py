@@ -204,7 +204,7 @@ class RobotClient:
                 log_prefix="[CLIENT] Observation",
                 silent=True,
             )
-            _ = self.stub.SendObservations(observation_iterator, compression=grpc.Compression.GZIP)
+            _ = self.stub.SendObservations(observation_iterator, compression=grpc.Compression.Gzip)
             obs_timestep = obs.get_timestep()
             self.logger.debug(f"Sent observation #{obs_timestep} | ")
 
