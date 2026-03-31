@@ -74,6 +74,8 @@ class PI05Config(PreTrainedConfig):
     # Training settings
     gradient_checkpointing: bool = False  # Enable gradient checkpointing for memory optimization
     compile_model: bool = False  # Whether to use torch.compile for model optimization
+    compile_inference_only: bool = False  # Only compile sample_actions (inference), skip compiling forward (training).
+    # Set True when using PEFT/LoRA to avoid torch.compile + Flash Attention RNG crash during training.
     compile_mode: str = "max-autotune"  # Torch compile mode
     device: str | None = None  # Device to use for the model (None = auto-detect)
 
