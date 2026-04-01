@@ -69,6 +69,7 @@ class ACTPolicy(PreTrainedPolicy):
         if config.compile_model:
             self.forward = torch.compile(self.forward, mode=config.compile_mode)
             self.select_action = torch.compile(self.select_action, mode="default")
+            self.predict_action_chunk = torch.compile(self.predict_action_chunk, mode=config.compile_mode)
 
         self.reset()
 

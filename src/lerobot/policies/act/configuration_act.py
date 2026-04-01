@@ -89,7 +89,7 @@ class ACTConfig(PreTrainedConfig):
         kl_weight: The weight to use for the KL-divergence component of the loss if the variational objective
             is enabled. Loss is then calculated as: `reconstruction_loss + kl_weight * kld_loss`.
         compile_model: Enables compiling with `torch.compile` for faster policy training and inference.
-            This compiles both the `forward()` and `select_action()` methods.
+            This compiles `forward()`, `select_action()`, and `predict_action_chunk()` methods.
         compile_mode: The compilation mode used by `torch.compile` for the policy forward function.
     """
 
