@@ -64,6 +64,13 @@ class PolicyServerConfig:
         default=DEFAULT_OBS_QUEUE_TIMEOUT, metadata={"help": "Timeout for observation queue in seconds"}
     )
 
+    # Training-time RTC support: number of prefix actions to condition on from the previous chunk.
+    # 0 means disabled (default, original behavior).
+    inference_delay: int = field(
+        default=0,
+        metadata={"help": "Number of prefix actions for training-time RTC conditioning. 0 to disable."},
+    )
+
     def __post_init__(self):
         """Validate configuration after initialization."""
         if self.port < 1 or self.port > 65535:
@@ -77,6 +84,9 @@ class PolicyServerConfig:
 
         if self.obs_queue_timeout < 0:
             raise ValueError(f"obs_queue_timeout must be non-negative, got {self.obs_queue_timeout}")
+
+        if self.inference_delay < 0:
+            raise ValueError(f"inference_delay must be non-negative, got {self.inference_delay}")
 
     @classmethod
     def from_dict(cls, config_dict: dict) -> "PolicyServerConfig":

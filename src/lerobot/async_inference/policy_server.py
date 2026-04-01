@@ -91,6 +91,10 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         self.preprocessor: PolicyProcessorPipeline[dict[str, Any], dict[str, Any]] | None = None
         self.postprocessor: PolicyProcessorPipeline[PolicyAction, PolicyAction] | None = None
 
+        # Training-time RTC state
+        self._prev_action_chunk: torch.Tensor | None = None
+        self._prev_chunk_timestep: int | None = None
+
     @property
     def running(self):
         return not self.shutdown_event.is_set()
@@ -107,6 +111,10 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         with self._predicted_timesteps_lock:
             self._predicted_timesteps = set()
+
+        # Reset training-time RTC state
+        self._prev_action_chunk = None
+        self._prev_chunk_timestep = None
 
     def Ready(self, request, context):  # noqa: N802
         client_id = context.peer()
@@ -343,11 +351,24 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
             for i, action in enumerate(action_chunk)
         ]
 
-    def _get_action_chunk(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Get an action chunk from the policy. The chunk contains only"""
-        chunk = self.policy.predict_action_chunk(observation)
+    def _get_action_chunk(self, observation: dict[str, torch.Tensor], obs_timestep: int) -> torch.Tensor:
+        """Get an action chunk from the policy."""
+        inference_delay = self.config.inference_delay
+        kwargs = {}
+
+        if inference_delay > 0 and self._prev_action_chunk is not None:
+            consumed = obs_timestep - self._prev_chunk_timestep
+            remaining = self._prev_action_chunk[:, consumed:, :]
+            kwargs["inference_delay"] = inference_delay
+            kwargs["prev_chunk_left_over"] = remaining
+
+        chunk = self.policy.predict_action_chunk(observation, **kwargs)
         if chunk.ndim != 3:
             chunk = chunk.unsqueeze(0)  # adding batch dimension, now shape is (B, chunk_size, action_dim)
+
+        if inference_delay > 0:
+            self._prev_action_chunk = chunk.detach().clone()
+            self._prev_chunk_timestep = obs_timestep
 
         return chunk[:, : self.actions_per_chunk, :]
 
@@ -378,7 +399,7 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
 
         """3. Get action chunk"""
         start_inference = time.perf_counter()
-        action_tensor = self._get_action_chunk(observation)
+        action_tensor = self._get_action_chunk(observation, observation_t.get_timestep())
         inference_time = time.perf_counter() - start_inference
         self.logger.info(
             f"Preprocessing and inference took {inference_time:.4f}s, action shape: {action_tensor.shape}"
