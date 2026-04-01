@@ -19,6 +19,8 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
 
+from src.lerobot.utils.constants import OBS_STATE
+
 
 @PreTrainedConfig.register_subclass("act")
 @dataclass
@@ -48,6 +50,10 @@ class ACTConfig(PreTrainedConfig):
             This should be no greater than the chunk size. For example, if the chunk size size 100, you may
             set this to 50. This would mean that the model predicts 100 steps worth of actions, runs 50 in the
             environment, and throws the other 50 out.
+        use_proprio: Proprioception control for ACT:
+            - None: auto, use observation.state if dataset/config provides it
+            - True: require observation.state
+            - False: explicitly ignore observation.state
         input_shapes: A dictionary defining the shapes of the input data for the policy. The key represents
             the input data name, and the value is a list indicating the dimensions of the corresponding data.
             For example, "observation.image" refers to an input from a camera with dimensions [3, 96, 96],
@@ -94,6 +100,7 @@ class ACTConfig(PreTrainedConfig):
     n_obs_steps: int = 1
     chunk_size: int = 100
     n_action_steps: int = 100
+    use_proprio: bool | None = None
 
     normalization_mapping: dict[str, NormalizationMode] = field(
         default_factory=lambda: {
@@ -169,7 +176,23 @@ class ACTConfig(PreTrainedConfig):
     def get_scheduler_preset(self) -> None:
         return None
 
+    def apply_proprio_setting(self) -> None:
+        if not self.input_features:
+            return
+
+        # 如果不感知本体状态，就从输入特征里去掉 `observation.state` 相关的特征。
+        if self.use_proprio is False:
+            self.input_features = {
+                key: feature for key, feature in self.input_features.items()
+                if key != OBS_STATE
+            }
+            return
+
+        if self.use_proprio is True and self.robot_state_feature is None:
+            raise ValueError("`use_proprio` is set to True but no `observation.state` feature found in the input features.")
+
     def validate_features(self) -> None:
+        self.apply_proprio_setting()
         if not self.image_features and not self.env_state_feature:
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
