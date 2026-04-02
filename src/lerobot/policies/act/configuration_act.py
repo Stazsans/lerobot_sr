@@ -19,7 +19,7 @@ from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
 
-from src.lerobot.utils.constants import OBS_STATE
+from lerobot.utils.constants import OBS_STATE
 
 
 @PreTrainedConfig.register_subclass("act")
