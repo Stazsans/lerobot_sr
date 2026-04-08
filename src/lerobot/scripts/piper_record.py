@@ -34,10 +34,11 @@ python -m lerobot.record \
 """
 
 """
-python -m lerobot.record \
-    --robot.type=moving_dual_piper \
-    --robot.port="" \
-    --robot.id=mobile_ai_robot \
+piper-record \
+    --robot.type=single_piper \
+    --robot.port=can1 \
+    --robot.id=single_piper_robot \
+    --robot.cameras="{laptop: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" \
     --dataset.repo_id=kelo/vla_test \
     --dataset.num_episodes=2 \
     --dataset.single_task="Grab the cube"
@@ -240,18 +241,18 @@ def record_loop(
 
         if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
-            frame = {**observation_frame, **action_frame}
-            dataset.add_frame(frame, task=single_task)
+            frame = {**observation_frame, **action_frame, "task": single_task}
+            dataset.add_frame(frame)
 
         if display_data:
             for obs, val in observation.items():
                 if isinstance(val, float):
-                    rr.log(f"observation.{obs}", rr.Scalar(val))
+                    rr.log(f"observation.{obs}", rr.Scalars(val))
                 elif isinstance(val, np.ndarray):
                     rr.log(f"observation.{obs}", rr.Image(val), static=True)
             for act, val in action.items():
                 if isinstance(val, float):
-                    rr.log(f"action.{act}", rr.Scalar(val))
+                    rr.log(f"action.{act}", rr.Scalars(val))
         
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
@@ -364,5 +365,9 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
     return dataset
 
 
-if __name__ == "__main__":
+def main():
     record()
+
+
+if __name__ == "__main__":
+    main()

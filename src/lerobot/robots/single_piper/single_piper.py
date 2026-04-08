@@ -19,16 +19,10 @@ import time
 from functools import cached_property
 from typing import Any
 
-from lerobot.common.cameras.utils import make_cameras_from_configs
-from lerobot.common.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
-from lerobot.common.motors import Motor, MotorCalibration, MotorNormMode
-from lerobot.common.motors.feetech import (
-    FeetechMotorsBus,
-    OperatingMode,
-)
+from lerobot.cameras.utils import make_cameras_from_configs
+from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 from ..robot import Robot
-from ..utils import ensure_safe_goal_position
 from .config_single_piper import SinglePiperConfig
 
 
@@ -51,7 +45,7 @@ class SinglePiper(Robot):
         super().__init__(config)
         self.config = config
         # 创建 robot 连接
-        self.piper = C_PiperInterface("can1")
+        self.piper = C_PiperInterface(config.port)
         # 创建 motor 映射
         self.motors = {
             "joint_1.pos": 0.0,
