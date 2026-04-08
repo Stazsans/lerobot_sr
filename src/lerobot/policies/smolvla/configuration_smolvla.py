@@ -23,6 +23,7 @@ from lerobot.optim.schedulers import (
 from lerobot.policies.rtc.configuration_rtc import RTCConfig, RTCTrainingConfig
 from lerobot.utils.constants import OBS_IMAGES
 
+from typing import Optional
 
 @PreTrainedConfig.register_subclass("smolvla")
 @dataclass
@@ -104,8 +105,9 @@ class SmolVLAConfig(PreTrainedConfig):
     max_period: float = 4.0
 
     # Real-Time Chunking (RTC) configurations
-    rtc_config: RTCConfig | None = None
-    rtc_training_config: RTCTrainingConfig | None = None
+    # Draccus does not support PEP 604 syntax, must use Optional
+    rtc_config: Optional[RTCConfig] = None  # noqa: UP007
+    rtc_training_config: Optional[RTCTrainingConfig] = None  # noqa: UP007
 
     compile_model: bool = False  # Whether to use torch.compile for model optimization
     compile_mode: str = "max-autotune"  # Torch compile mode
