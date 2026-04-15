@@ -36,6 +36,7 @@ SO101 EE 位姿空间异步推理评估脚本。
 import pickle  # nosec
 import threading
 import time
+from pathlib import Path
 from queue import Empty, Queue
 
 import grpc
@@ -83,6 +84,8 @@ CHUNK_SIZE_THRESHOLD = 0.8
 TASK_DESCRIPTION = "Transfer the top disk from the left pillar to the right pillar."
 
 POLICY_DEVICE = "cuda"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+URDF_PATH = REPO_ROOT / "third_party" / "SO-ARM100" / "Simulation" / "SO101" / "so101_new_calib.urdf"
 
 # EE 偏移补偿（用于校正模型推理的系统性偏差）
 # 位移偏移 (米)
@@ -273,7 +276,7 @@ def main():
     robot = SO101Follower(follower_config)
 
     kinematics_solver = RobotKinematics(
-        urdf_path="/home/sr/SO-ARM100/Simulation/SO101",
+        urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
         joint_names=list(robot.bus.motors.keys()),
     )

@@ -22,9 +22,11 @@ Leader 关节角度经 FK 转为 EE 位姿指令，再经 IK 转为 follower 关
 
 使用前修改以下常量：
 - FOLLOWER_PORT / LEADER_PORT: 串口路径
+- URDF_PATH: 本地 so101_new_calib.urdf 路径
 """
 
 import time
+from pathlib import Path
 
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.processor import RobotAction, RobotObservation, RobotProcessorPipeline
@@ -47,6 +49,8 @@ from lerobot.utils.visualization_utils import init_rerun, log_rerun_data
 FOLLOWER_PORT = "/dev/ttyACM0"
 LEADER_PORT = "/dev/ttyACM1"
 FPS = 30
+REPO_ROOT = Path(__file__).resolve().parents[3]
+URDF_PATH = REPO_ROOT / "third_party" / "SO-ARM100" / "Simulation" / "SO101" / "so101_new_calib.urdf"
 # ==============================
 
 
@@ -60,13 +64,13 @@ def main():
     leader = SO101Leader(leader_config)
 
     follower_kinematics_solver = RobotKinematics(
-        urdf_path="so101_new_calib.urdf",
+        urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
         joint_names=list(follower.bus.motors.keys()),
     )
 
     leader_kinematics_solver = RobotKinematics(
-        urdf_path="so101_new_calib.urdf",
+        urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
         joint_names=list(leader.bus.motors.keys()),
     )

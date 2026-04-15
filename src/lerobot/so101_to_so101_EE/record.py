@@ -76,7 +76,8 @@ VIDEO_ENCODING_BATCH_SIZE = 1
 VCODEC = "libsvtav1"
 
 # 运动学配置
-URDF_PATH = "/home/sr/SO-ARM100/Simulation/SO101"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+URDF_PATH = REPO_ROOT / "third_party" / "SO-ARM100" / "Simulation" / "SO101" / "so101_new_calib.urdf"
 TARGET_FRAME_NAME = "gripper_frame_link"
 EE_BOUNDS_MIN = [-1.0, -1.0, -1.0]
 EE_BOUNDS_MAX = [1.0, 1.0, 1.0]
@@ -91,12 +92,12 @@ PLAY_SOUNDS = True
 def build_ee_processors(follower, leader):
     """构建 EE 位姿空间的 FK/IK 处理管线。"""
     follower_kin = RobotKinematics(
-        urdf_path=URDF_PATH,
+        urdf_path=str(URDF_PATH),
         target_frame_name=TARGET_FRAME_NAME,
         joint_names=list(follower.bus.motors.keys()),
     )
     leader_kin = RobotKinematics(
-        urdf_path=URDF_PATH,
+        urdf_path=str(URDF_PATH),
         target_frame_name=TARGET_FRAME_NAME,
         joint_names=list(leader.bus.motors.keys()),
     )

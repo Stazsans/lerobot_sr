@@ -35,6 +35,60 @@ from .config_so_follower import SOFollowerRobotConfig
 logger = logging.getLogger(__name__)
 
 
+def _degrees_limits_from_calibration(
+    calibration: MotorCalibration,
+    *,
+    max_resolution: int,
+) -> tuple[float, float]:
+    mid = (calibration.range_min + calibration.range_max) / 2
+    min_limit = (calibration.range_min - mid) * 360 / max_resolution
+    max_limit = (calibration.range_max - mid) * 360 / max_resolution
+    return (float(min(min_limit, max_limit)), float(max(min_limit, max_limit)))
+
+
+def clip_goal_positions_to_calibration(
+    goal_pos: dict[str, float],
+    *,
+    motors: dict[str, Motor],
+    calibration: dict[str, MotorCalibration],
+    model_resolution_table: dict[str, int],
+) -> dict[str, float]:
+    clipped_goal_pos = dict(goal_pos)
+
+    for motor_name, target in goal_pos.items():
+        motor_calibration = calibration.get(motor_name)
+        motor = motors.get(motor_name)
+        if motor_calibration is None or motor is None:
+            continue
+
+        if motor.norm_mode is MotorNormMode.DEGREES:
+            max_resolution = model_resolution_table[motor.model] - 1
+            min_limit, max_limit = _degrees_limits_from_calibration(
+                motor_calibration,
+                max_resolution=max_resolution,
+            )
+        elif motor.norm_mode is MotorNormMode.RANGE_0_100:
+            min_limit, max_limit = 0.0, 100.0
+        elif motor.norm_mode is MotorNormMode.RANGE_M100_100:
+            min_limit, max_limit = -100.0, 100.0
+        else:
+            continue
+
+        clipped_target = max(min_limit, min(max_limit, float(target)))
+        if clipped_target != target:
+            logger.debug(
+                "Clipped %s from %.2f to %.2f based on calibration limits [%.2f, %.2f].",
+                motor_name,
+                target,
+                clipped_target,
+                min_limit,
+                max_limit,
+            )
+        clipped_goal_pos[motor_name] = clipped_target
+
+    return clipped_goal_pos
+
+
 class SOFollower(Robot):
     """
     Generic SO follower base implementing common functionality for SO-100/101/10X.
@@ -209,6 +263,13 @@ class SOFollower(Robot):
         """
 
         goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+
+        goal_pos = clip_goal_positions_to_calibration(
+            goal_pos,
+            motors=self.bus.motors,
+            calibration=self.bus.calibration,
+            model_resolution_table=self.bus.model_resolution_table,
+        )
 
         # Cap goal position when too far away from present position.
         # /!\ Slower fps expected due to reading from the follower.

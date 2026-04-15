@@ -50,6 +50,8 @@ FOLLOWER_PORT = "/dev/ttyACM0"
 DATASET_NAME = "hanoi_ee"
 DATASET_ROOT = Path("/home/sr/datasets") / DATASET_NAME
 EPISODE_IDX = 0
+REPO_ROOT = Path(__file__).resolve().parents[3]
+URDF_PATH = REPO_ROOT / "third_party" / "SO-ARM100" / "Simulation" / "SO101" / "so101_new_calib.urdf"
 # ==============================
 
 
@@ -60,7 +62,7 @@ def main():
     robot = SO101Follower(robot_config)
 
     kinematics_solver = RobotKinematics(
-        urdf_path="/home/sr/SO-ARM100/Simulation/SO101",
+        urdf_path=str(URDF_PATH),
         target_frame_name="gripper_frame_link",
         joint_names=list(robot.bus.motors.keys()),
     )

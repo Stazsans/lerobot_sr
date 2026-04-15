@@ -16,10 +16,11 @@
 | 文件 | 用途 |
 |------|------|
 | `teleoperate.py` | 遥操作：leader 关节 → FK → EE 指令 → IK → follower 关节 |
+| `move_to_pose.py` | 单目标/多目标末端位姿验证：直接给 EE pose，经 IK 到达 |
 | `record.py` | 数据采集：遥操作 + 录制 EE 空间数据集（参照 lerobot-record 流程） |
 | `replay.py` | 回放验证：读取本地数据集的 EE 动作并通过 IK 执行 |
 | `evaluate.py` | 异步推理评估：gRPC 策略服务器 + 机器人客户端 |
-| `so101_new_calib.urdf` | SO101 运动学模型描述文件 |
+| `third_party/SO-ARM100/Simulation/SO101/so101_new_calib.urdf` | SO101 运动学模型描述文件，以上脚本默认使用该路径 |
 
 ## 前置准备
 
@@ -27,7 +28,7 @@
 2. **串口识别**：`lerobot-find-port` 找到 leader/follower 端口
 3. **摄像头识别**：`lerobot-find-cameras` 找到摄像头索引
 4. **校准**：确保 follower 和 leader 都已校准
-5. **URDF 文件**：`so101_new_calib.urdf` 已包含在本目录
+5. **URDF 文件**：默认使用仓库内 `third_party/SO-ARM100/Simulation/SO101/so101_new_calib.urdf`，只有在你要替换模型文件时才需要修改 `URDF_PATH`
 
 ## 键盘控制
 
@@ -51,8 +52,7 @@
 验证 FK/IK 管线和硬件连接是否正常：
 
 ```bash
-cd examples/so101_to_so101_EE
-python teleoperate.py
+python src/lerobot/so101_to_so101_EE/teleoperate.py
 ```
 
 ### 2. 数据采集
@@ -61,7 +61,15 @@ python teleoperate.py
 使用前修改脚本顶部的常量配置：
 
 ```bash
-python record.py
+python src/lerobot/so101_to_so101_EE/record.py
+```
+
+### 2.5 直接给定末端位姿
+
+不依赖 leader 臂，直接给目标 EE pose 做真机 FK/IK 验证：
+
+```bash
+python src/lerobot/so101_to_so101_EE/move_to_pose.py
 ```
 
 ### 3. 回放验证
@@ -69,7 +77,7 @@ python record.py
 回放数据集中的 EE 动作来验证数据质量：
 
 ```bash
-python replay.py
+python src/lerobot/so101_to_so101_EE/replay.py
 ```
 
 ### 4. 训练
@@ -99,7 +107,7 @@ python -m lerobot.async_inference.policy_server \
 **终端 2 -- 启动评估客户端**（在机器人连接的机器上运行）：
 
 ```bash
-python evaluate.py
+python src/lerobot/so101_to_so101_EE/evaluate.py
 ```
 
 评估流程：
@@ -119,7 +127,9 @@ python evaluate.py
 | `DATASET_NAME` / `DATASET_ROOT` | record, replay | 数据集名称和本地路径 |
 | `MODEL_PATH` | evaluate | 训练好的模型路径 |
 | `SERVER_ADDRESS` | evaluate | 策略服务器地址 |
-| `URDF_PATH` | record, teleoperate, replay, evaluate | 运动学模型路径 |
+| `URDF_PATH` | move_to_pose, record, teleoperate, replay, evaluate | 默认指向仓库内 `third_party/SO-ARM100/Simulation/SO101/so101_new_calib.urdf` |
+
+推荐先只改串口和相机，再直接跑 `move_to_pose.py` 做最小真机验证；默认 URDF 路径能用时，不要额外改动。
 
 ## 数据集存储
 
@@ -145,3 +155,11 @@ python evaluate.py
 `EEBoundsAndSafety` 处理器提供运行时安全保护：
 - `end_effector_bounds`：EE 位置的工作空间限制
 - `max_ee_step_m`：单步最大 EE 位移限制（防止大幅跳变）
+- `max_orientation_step_rad`：单步最大 EE 姿态变化限制（防止大幅旋转跳变）
+
+当前 SO-101 真机链路还包含这些保护：
+
+- IK 候选多 seed 搜索与打分选优
+- 不安全或末端误差过大的 IK 解回退到当前关节
+- `send_action()` 下发前基于电机校准的绝对关节限位裁剪
+- gripper 目标显式基于 `gripper.pos` 计算，不依赖关节顺序
