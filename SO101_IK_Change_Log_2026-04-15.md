@@ -190,35 +190,27 @@ third_party/SO-ARM100/Simulation/SO101/so101_new_calib.urdf
 - [GripperVelocityToJoint](/C:/Users/seer/projects/lerobot_sr/src/lerobot/robots/so_follower/robot_kinematic_processor.py#L570)
 - [gripper.pos](/C:/Users/seer/projects/lerobot_sr/src/lerobot/robots/so_follower/robot_kinematic_processor.py#L599)
 
-## 已知问题
-
-### 1. RL 路径会优先参考上一拍 `IK_solution`
+### 12. RL 路径参考状态已改为“观测优先，IK 解仅在近一致时复用”
 
 文件：
 
-- [robot_kinematic_processor.py](/C:/Users/seer/projects/lerobot_sr/src/lerobot/robots/so_follower/robot_kinematic_processor.py#L294)
+- [robot_kinematic_processor.py](/C:/Users/seer/projects/lerobot_sr/src/lerobot/robots/so_follower/robot_kinematic_processor.py)
+- [test_so_follower_ik.py](/C:/Users/seer/projects/lerobot_sr/tests/test_so_follower_ik.py)
 
-问题：
+已完成内容：
 
-- `use_ik_solution=True` 时，`EEReferenceAndDelta` 会优先使用上一拍 `IK_solution`
-- 这不一定等于当前真机真实关节状态
-- 若真机未完全跟上、被扰动、发生漂移，后续参考系可能继续积累误差
+- `EEReferenceAndDelta` 现在总是先读取当前观测关节作为 FK 参考真值
+- 当 `use_ik_solution=True` 时，仅在上一拍 `IK_solution` 与当前观测关节偏差足够小的情况下才复用该解
+- 若真机未跟上、被扰动或发生漂移，参考状态会自动回退到当前真实观测，不再优先沿用陈旧的 `IK_solution`
+- 已补充测试覆盖“陈旧 IK 解应被忽略”和“近一致 IK 解可继续复用”两种情况
 
-影响：
+## 已知问题
 
-- 主要影响 RL/增量控制链路
-- 对 `move_to_pose.py` 这种每步使用当前观测的路径影响较小
-
-### 2. 当前仍未处理 RL 路径对上一拍 `IK_solution` 的优先依赖
-
-说明：
-
-- 这仍是目前最显著的残余问题
-- 真机未跟上、发生漂移或受扰动时，参考系仍可能积累误差
+### 1. 当前这批 SO-101 IK 改动里，未再保留“RL 路径优先使用上一拍 `IK_solution`”这个问题
 
 ## 待处理
 
-### 1. 评估 RL 路径是否继续使用上一拍 `IK_solution`
+### 1. 做一轮真机验证，确认 RL 增量控制在实际跟随滞后和外力扰动下不再出现参考系累积漂移
 
 建议：
 

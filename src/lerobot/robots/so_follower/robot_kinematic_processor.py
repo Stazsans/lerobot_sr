@@ -246,6 +246,43 @@ def _solve_best_ik_solution(
     return best["candidate"].copy()
 
 
+def _select_reference_joint_positions(
+    *,
+    observation: dict[str, Any],
+    complementary_data: dict[str, Any] | None,
+    motor_names: list[str],
+    use_ik_solution: bool,
+    max_ik_tracking_error_deg: float | dict[str, float] | None,
+) -> np.ndarray:
+    measured_joint_pos = _ordered_joint_positions(observation, motor_names)
+
+    if not use_ik_solution:
+        return measured_joint_pos
+
+    if not complementary_data or "IK_solution" not in complementary_data:
+        return measured_joint_pos
+
+    ik_solution = np.array(complementary_data["IK_solution"], dtype=float)
+    if ik_solution.shape != measured_joint_pos.shape or not np.isfinite(ik_solution).all():
+        logger.warning("Ignoring IK_solution reference with invalid shape or non-finite values.")
+        return measured_joint_pos
+
+    active_mask = _active_joint_mask(motor_names)
+    tracking_error = np.abs(_angle_delta_deg(ik_solution, measured_joint_pos))[active_mask]
+    tracking_limits = _per_joint_values(max_ik_tracking_error_deg, motor_names, np.inf)[active_mask]
+    over_limit = np.clip(tracking_error - tracking_limits, 0.0, None)
+
+    if over_limit.size and np.any(over_limit > 0.0):
+        logger.debug(
+            "Ignoring stale IK_solution reference: max tracking error %.2fdeg exceeds limit by %.2fdeg.",
+            float(tracking_error.max()),
+            float(over_limit.max()),
+        )
+        return measured_joint_pos
+
+    return ik_solution.copy()
+
+
 @ProcessorStepRegistry.register("ee_reference_and_delta")
 @dataclass
 class EEReferenceAndDelta(RobotActionProcessorStep):
@@ -268,6 +305,8 @@ class EEReferenceAndDelta(RobotActionProcessorStep):
         motor_names: A list of motor names required for forward kinematics.
         use_latched_reference: If True, latch the reference pose on enable; otherwise, always use the
             current pose as the reference.
+        max_ik_tracking_error_deg: Maximum allowed deviation between the measured joints and the
+            cached `IK_solution` before the measured state takes precedence again.
         reference_ee_pose: Internal state storing the latched reference pose.
         _prev_enabled: Internal state to detect the rising edge of the enable signal.
         _command_when_disabled: Internal state to hold the last command while disabled.
@@ -280,27 +319,26 @@ class EEReferenceAndDelta(RobotActionProcessorStep):
         True  # If True, latch reference on enable; if False, always use current pose
     )
     use_ik_solution: bool = False
+    max_ik_tracking_error_deg: float | dict[str, float] | None = 5.0
 
     reference_ee_pose: np.ndarray | None = field(default=None, init=False, repr=False)
     _prev_enabled: bool = field(default=False, init=False, repr=False)
     _command_when_disabled: np.ndarray | None = field(default=None, init=False, repr=False)
 
     def action(self, action: RobotAction) -> RobotAction:
-        observation = self.transition.get(TransitionKey.OBSERVATION).copy()
+        observation = self.transition.get(TransitionKey.OBSERVATION)
 
         if observation is None:
             raise ValueError("Joints observation is require for computing robot kinematics")
 
-        if self.use_ik_solution and "IK_solution" in self.transition.get(TransitionKey.COMPLEMENTARY_DATA):
-            q_raw = np.array(
-                self.transition.get(TransitionKey.COMPLEMENTARY_DATA)["IK_solution"],
-                dtype=float,
-            )
-        else:
-            q_raw = _ordered_joint_positions(observation, self.motor_names)
-
-        if q_raw is None:
-            raise ValueError("Joints observation is require for computing robot kinematics")
+        observation = observation.copy()
+        q_raw = _select_reference_joint_positions(
+            observation=observation,
+            complementary_data=self.transition.get(TransitionKey.COMPLEMENTARY_DATA, {}),
+            motor_names=self.motor_names,
+            use_ik_solution=self.use_ik_solution,
+            max_ik_tracking_error_deg=self.max_ik_tracking_error_deg,
+        )
 
         # Current pose from FK on measured joints
         t_curr = self.kinematics.forward_kinematics(q_raw)

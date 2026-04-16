@@ -242,7 +242,7 @@ def test_ee_reference_and_delta_uses_motor_names_order_for_observation_fk():
     assert action["ee.z"] == 30.0
 
 
-def test_ee_reference_and_delta_prefers_ik_solution_when_enabled():
+def test_ee_reference_and_delta_ignores_stale_ik_solution_when_observation_drifted():
     kinematics = RecordingForwardKinematics()
     step = EEReferenceAndDelta(
         kinematics=kinematics,
@@ -250,6 +250,7 @@ def test_ee_reference_and_delta_prefers_ik_solution_when_enabled():
         motor_names=MOTOR_NAMES,
         use_latched_reference=False,
         use_ik_solution=True,
+        max_ik_tracking_error_deg=5.0,
     )
 
     transition = create_transition(
@@ -264,16 +265,51 @@ def test_ee_reference_and_delta_prefers_ik_solution_when_enabled():
             "gripper_vel": 0.0,
         },
         observation=make_observation(),
-        complementary_data={"IK_solution": np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])},
+        complementary_data={"IK_solution": np.array([70.0, 2.0, 3.0, 4.0, 5.0, 6.0])},
     )
 
     result = step(transition)
 
-    np.testing.assert_allclose(kinematics.last_joint_pos, np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0]))
+    np.testing.assert_allclose(kinematics.last_joint_pos, np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0]))
     action = result[TransitionKey.ACTION]
-    assert action["ee.x"] == 1.0
-    assert action["ee.y"] == 2.0
-    assert action["ee.z"] == 3.0
+    assert action["ee.x"] == 10.0
+    assert action["ee.y"] == 20.0
+    assert action["ee.z"] == 30.0
+
+
+def test_ee_reference_and_delta_reuses_ik_solution_when_it_matches_observation():
+    kinematics = RecordingForwardKinematics()
+    step = EEReferenceAndDelta(
+        kinematics=kinematics,
+        end_effector_step_sizes={"x": 1.0, "y": 1.0, "z": 1.0},
+        motor_names=MOTOR_NAMES,
+        use_latched_reference=False,
+        use_ik_solution=True,
+        max_ik_tracking_error_deg=5.0,
+    )
+
+    transition = create_transition(
+        action={
+            "enabled": True,
+            "target_x": 0.0,
+            "target_y": 0.0,
+            "target_z": 0.0,
+            "target_wx": 0.0,
+            "target_wy": 0.0,
+            "target_wz": 0.0,
+            "gripper_vel": 0.0,
+        },
+        observation=make_observation(),
+        complementary_data={"IK_solution": np.array([11.0, 21.0, 31.0, 41.0, 51.0, 60.0])},
+    )
+
+    result = step(transition)
+
+    np.testing.assert_allclose(kinematics.last_joint_pos, np.array([11.0, 21.0, 31.0, 41.0, 51.0, 60.0]))
+    action = result[TransitionKey.ACTION]
+    assert action["ee.x"] == 11.0
+    assert action["ee.y"] == 21.0
+    assert action["ee.z"] == 31.0
 
 
 def test_ee_bounds_and_safety_clamps_orientation_jump():
