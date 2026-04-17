@@ -72,6 +72,13 @@ python src/lerobot/so101_to_so101_EE/record.py
 python src/lerobot/so101_to_so101_EE/move_to_pose.py
 ```
 
+`move_to_pose.py` 当前的用户侧位置配置统一使用 `cm`：
+
+- `TARGET_POSE` 里的 `ee.x / ee.y / ee.z` 按厘米填写
+- `TARGET_POSE` 里的 `delta.ee.x / delta.ee.y / delta.ee.z` 也按厘米填写
+- 运行日志里的位置和位置误差同样按厘米打印
+- 脚本内部进入 FK/IK 前会自动换算成米，因此不影响底层运动学实现
+
 ### 3. 回放验证
 
 回放数据集中的 EE 动作来验证数据质量：

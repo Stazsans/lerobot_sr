@@ -21,6 +21,8 @@ SO101 真机末端位姿直达脚本。
 脚本会反复读取当前关节状态，做 FK 获取当前末端位姿，
 再通过 IK 朝目标逐步推进。这样真机滞后、限幅、或某步 IK 回退时，
 下一步仍会基于当前真实状态继续修正。
+
+用户侧位置量统一使用厘米（cm）配置和打印，内部进入 FK/IK 前再换算成米。
 """
 
 from pathlib import Path
@@ -50,15 +52,17 @@ TARGET_FRAME_NAME = "gripper_frame_link"
 
 FPS = 20
 MAX_CONTROL_STEPS = 180
-HOLD_TIME_S = 0.5
-POSITION_CONVERGENCE_M = 0.03
+HOLD_TIME_S = 0.1
+POSITION_CONVERGENCE_CM = 1.0
+ORIENTATION_CONVERGENCE_RAD = 0.10
+GRIPPER_CONVERGENCE = 0.5
 NO_IMPROVEMENT_STEPS = 80
-MIN_ERROR_IMPROVEMENT_M = 0.0005
+MIN_ERROR_IMPROVEMENT_CM = 0.05
 
-EE_BOUNDS_MIN = [-0.3186, -0.3973, -0.2272]
-EE_BOUNDS_MAX = [0.4700, 0.3975, 0.5210]
-MAX_COMMAND_STEP_M = 0.015
-MAX_EE_SAFETY_STEP_M = 0.025
+EE_BOUNDS_MIN_CM = [-31.86, -39.73, -22.72]
+EE_BOUNDS_MAX_CM = [47.00, 39.75, 52.10]
+MAX_COMMAND_STEP_CM = 1.5
+MAX_EE_SAFETY_STEP_CM = 2.5
 MAX_GRIPPER_STEP = 5.0
 MAX_JOINT_DELTA_DEG = {
     "shoulder_pan": 35.0,
@@ -67,22 +71,30 @@ MAX_JOINT_DELTA_DEG = {
     "wrist_flex": 45.0,
     "wrist_roll": 80.0,
 }
-IK_POSITION_TOLERANCE_M = 0.18
+IK_POSITION_TOLERANCE_CM = 18.0
 IK_ORIENTATION_TOLERANCE_RAD = 1.8
 USE_TARGET_ORIENTATION = False
 POSE_KEYS = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"]
 POSITION_KEYS = ["ee.x", "ee.y", "ee.z"]
 ORIENTATION_KEYS = ["ee.wx", "ee.wy", "ee.wz"]
+CM_PER_M = 100.0
+POSITION_CONVERGENCE_M = POSITION_CONVERGENCE_CM / CM_PER_M
+MIN_ERROR_IMPROVEMENT_M = MIN_ERROR_IMPROVEMENT_CM / CM_PER_M
+EE_BOUNDS_MIN = [value / CM_PER_M for value in EE_BOUNDS_MIN_CM]
+EE_BOUNDS_MAX = [value / CM_PER_M for value in EE_BOUNDS_MAX_CM]
+MAX_COMMAND_STEP_M = MAX_COMMAND_STEP_CM / CM_PER_M
+MAX_EE_SAFETY_STEP_M = MAX_EE_SAFETY_STEP_CM / CM_PER_M
+IK_POSITION_TOLERANCE_M = IK_POSITION_TOLERANCE_CM / CM_PER_M
 
 TARGET_POSE = {
     "name": "manual_target",
-    "delta.ee.x": 0.1,
-    "delta.ee.y": 0.1,
-    "delta.ee.z": 0.1,
-    "ee.wx": 0.1,
-    "ee.wy": 0.1,
-    "ee.wz": 1.3,
-    "ee.gripper_pos": 20.0,
+    "delta.ee.x": 10,
+    "delta.ee.y": 10,
+    "delta.ee.z": -10,
+    "delta.ee.wx": 0,
+    "delta.ee.wy": 0,
+    "delta.ee.wz": 0,
+    "ee.gripper_pos": 30,
 }
 # ==============================
 
@@ -131,6 +143,21 @@ def clip_delta(value: float, max_abs_delta: float) -> float:
     return clamp(value, -max_abs_delta, max_abs_delta)
 
 
+def meters_to_cm(value_m: float) -> float:
+    return float(value_m * CM_PER_M)
+
+
+def cm_to_meters(value_cm: float) -> float:
+    return float(value_cm / CM_PER_M)
+
+
+def pose_meters_to_cm(pose: dict[str, float]) -> dict[str, float]:
+    converted = dict(pose)
+    for key in POSITION_KEYS:
+        converted[key] = meters_to_cm(float(converted[key]))
+    return converted
+
+
 def resolve_target_pose(current_pose: dict[str, float], target_pose: dict[str, float]) -> dict[str, float]:
     resolved = {"name": target_pose.get("name", "target")}
     for key in POSE_KEYS:
@@ -139,10 +166,14 @@ def resolve_target_pose(current_pose: dict[str, float], target_pose: dict[str, f
             continue
 
         if key in target_pose:
-            resolved[key] = float(target_pose[key])
+            value = float(target_pose[key])
+            resolved[key] = cm_to_meters(value) if key in POSITION_KEYS else value
         else:
             delta_key = f"delta.{key}"
-            resolved[key] = float(current_pose[key]) + float(target_pose.get(delta_key, 0.0))
+            delta_value = float(target_pose.get(delta_key, 0.0))
+            if key in POSITION_KEYS:
+                delta_value = cm_to_meters(delta_value)
+            resolved[key] = float(current_pose[key]) + delta_value
     return resolved
 
 
@@ -155,19 +186,20 @@ def clip_target_pose_to_bounds(target_pose: dict[str, float]) -> dict[str, float
 
 
 def print_ee_pose(prefix: str, pose: dict[str, float]) -> None:
+    pose_cm = pose_meters_to_cm(pose)
     print(
-        f"{prefix} x={pose['ee.x']:+.4f} y={pose['ee.y']:+.4f} z={pose['ee.z']:+.4f} "
-        f"wx={pose['ee.wx']:+.4f} wy={pose['ee.wy']:+.4f} wz={pose['ee.wz']:+.4f} "
-        f"gripper={pose['ee.gripper_pos']:+.2f}"
+        f"{prefix} x={pose_cm['ee.x']:+.2f}cm y={pose_cm['ee.y']:+.2f}cm z={pose_cm['ee.z']:+.2f}cm "
+        f"wx={pose_cm['ee.wx']:+.4f} wy={pose_cm['ee.wy']:+.4f} wz={pose_cm['ee.wz']:+.4f} "
+        f"gripper={pose_cm['ee.gripper_pos']:+.2f}"
     )
 
 
 def print_target_error(target_pose: dict[str, float], reached_pose: dict[str, float]) -> None:
-    dx = reached_pose["ee.x"] - target_pose["ee.x"]
-    dy = reached_pose["ee.y"] - target_pose["ee.y"]
-    dz = reached_pose["ee.z"] - target_pose["ee.z"]
+    dx = meters_to_cm(reached_pose["ee.x"] - target_pose["ee.x"])
+    dy = meters_to_cm(reached_pose["ee.y"] - target_pose["ee.y"])
+    dz = meters_to_cm(reached_pose["ee.z"] - target_pose["ee.z"])
     dpos = (dx**2 + dy**2 + dz**2) ** 0.5
-    print(f"Target error: dx={dx:+.4f}m dy={dy:+.4f}m dz={dz:+.4f}m |pos|={dpos:.4f}m")
+    print(f"Target error: dx={dx:+.2f}cm dy={dy:+.2f}cm dz={dz:+.2f}cm |pos|={dpos:.2f}cm")
 
 
 def position_error_norm(target_pose: dict[str, float], reached_pose: dict[str, float]) -> float:
@@ -175,6 +207,27 @@ def position_error_norm(target_pose: dict[str, float], reached_pose: dict[str, f
     dy = reached_pose["ee.y"] - target_pose["ee.y"]
     dz = reached_pose["ee.z"] - target_pose["ee.z"]
     return float((dx**2 + dy**2 + dz**2) ** 0.5)
+
+
+def orientation_error_norm(target_pose: dict[str, float], reached_pose: dict[str, float]) -> float:
+    dwx = float(reached_pose["ee.wx"]) - float(target_pose["ee.wx"])
+    dwy = float(reached_pose["ee.wy"]) - float(target_pose["ee.wy"])
+    dwz = float(reached_pose["ee.wz"]) - float(target_pose["ee.wz"])
+    return float((dwx**2 + dwy**2 + dwz**2) ** 0.5)
+
+
+def gripper_error_abs(target_pose: dict[str, float], reached_pose: dict[str, float]) -> float:
+    return abs(float(reached_pose["ee.gripper_pos"]) - float(target_pose["ee.gripper_pos"]))
+
+
+def target_reached(target_pose: dict[str, float], reached_pose: dict[str, float]) -> bool:
+    if position_error_norm(target_pose, reached_pose) > POSITION_CONVERGENCE_M:
+        return False
+    if USE_TARGET_ORIENTATION and orientation_error_norm(target_pose, reached_pose) > ORIENTATION_CONVERGENCE_RAD:
+        return False
+    if gripper_error_abs(target_pose, reached_pose) > GRIPPER_CONVERGENCE:
+        return False
+    return True
 
 
 def advance_towards_target(
@@ -243,8 +296,16 @@ def main():
             current_ee = fk_processor(robot_obs.copy())
             err = position_error_norm(resolved_target_pose, current_ee)
             if step == 1 or step % FPS == 0:
-                print(f"Step {step:03d}: position error {err:.4f}m")
-            if err <= POSITION_CONVERGENCE_M:
+                if USE_TARGET_ORIENTATION:
+                    orientation_err = orientation_error_norm(resolved_target_pose, current_ee)
+                    print(
+                        f"Step {step:03d}: position error {meters_to_cm(err):.2f}cm "
+                        f"orientation error {orientation_err:.3f}rad "
+                        f"gripper error {gripper_error_abs(resolved_target_pose, current_ee):.2f}"
+                    )
+                else:
+                    print(f"Step {step:03d}: position error {meters_to_cm(err):.2f}cm")
+            if target_reached(resolved_target_pose, current_ee):
                 break
 
             if err < best_error - MIN_ERROR_IMPROVEMENT_M:
@@ -255,7 +316,7 @@ def main():
             if stale_steps >= NO_IMPROVEMENT_STEPS:
                 print(
                     "Stopping because measured EE position is no longer improving "
-                    f"(current={err:.4f}m best={best_error:.4f}m)."
+                    f"(current={meters_to_cm(err):.2f}cm best={meters_to_cm(best_error):.2f}cm)."
                 )
                 break
 
