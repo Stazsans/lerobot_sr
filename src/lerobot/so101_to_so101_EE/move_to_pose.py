@@ -58,6 +58,7 @@ ORIENTATION_CONVERGENCE_RAD = 0.10
 GRIPPER_CONVERGENCE = 0.5
 NO_IMPROVEMENT_STEPS = 80
 MIN_ERROR_IMPROVEMENT_CM = 0.05
+MIN_PREDICTED_IMPROVEMENT_CM = 0.10
 
 EE_BOUNDS_MIN_CM = [-31.86, -39.73, -22.72]
 EE_BOUNDS_MAX_CM = [47.00, 39.75, 52.10]
@@ -80,6 +81,7 @@ ORIENTATION_KEYS = ["ee.wx", "ee.wy", "ee.wz"]
 CM_PER_M = 100.0
 POSITION_CONVERGENCE_M = POSITION_CONVERGENCE_CM / CM_PER_M
 MIN_ERROR_IMPROVEMENT_M = MIN_ERROR_IMPROVEMENT_CM / CM_PER_M
+MIN_PREDICTED_IMPROVEMENT_M = MIN_PREDICTED_IMPROVEMENT_CM / CM_PER_M
 EE_BOUNDS_MIN = [value / CM_PER_M for value in EE_BOUNDS_MIN_CM]
 EE_BOUNDS_MAX = [value / CM_PER_M for value in EE_BOUNDS_MAX_CM]
 MAX_COMMAND_STEP_M = MAX_COMMAND_STEP_CM / CM_PER_M
@@ -230,6 +232,42 @@ def target_reached(target_pose: dict[str, float], reached_pose: dict[str, float]
     return True
 
 
+def predicted_ee_pose_from_joint_action(
+    joint_action: RobotAction,
+    kinematics: RobotKinematics,
+    motor_names: list[str],
+) -> dict[str, float]:
+    q = [float(joint_action[f"{name}.pos"]) for name in motor_names]
+    pose = kinematics.forward_kinematics(q)
+    return {
+        "ee.x": float(pose[0, 3]),
+        "ee.y": float(pose[1, 3]),
+        "ee.z": float(pose[2, 3]),
+    }
+
+
+def predicted_motion_is_progress(
+    *,
+    current_pose: dict[str, float],
+    predicted_pose: dict[str, float],
+    target_pose: dict[str, float],
+) -> bool:
+    current_error = position_error_norm(target_pose, current_pose)
+    predicted_error = position_error_norm(target_pose, predicted_pose)
+    return predicted_error < current_error - MIN_PREDICTED_IMPROVEMENT_M
+
+
+def joint_hold_action_from_observation(
+    observation: RobotObservation,
+    motor_names: list[str],
+) -> RobotAction:
+    return {f"{name}.pos": float(observation[f"{name}.pos"]) for name in motor_names}
+
+
+def send_hold_action(robot: SO101Follower, observation: RobotObservation) -> None:
+    robot.send_action(joint_hold_action_from_observation(observation, list(robot.bus.motors.keys())))
+
+
 def advance_towards_target(
     current_pose: dict[str, float],
     target_pose: dict[str, float],
@@ -275,6 +313,7 @@ def main():
         joint_names=list(robot.bus.motors.keys()),
     )
     fk_processor, ik_processor = build_processors(robot, kinematics)
+    motor_names = list(robot.bus.motors.keys())
 
     robot.connect()
 
@@ -290,6 +329,7 @@ def main():
         print_ee_pose("Target EE :", resolved_target_pose)
 
         best_error = float("inf")
+        best_obs = robot_obs.copy()
         stale_steps = 0
         for step in range(1, MAX_CONTROL_STEPS + 1):
             robot_obs = robot.get_observation()
@@ -310,6 +350,7 @@ def main():
 
             if err < best_error - MIN_ERROR_IMPROVEMENT_M:
                 best_error = err
+                best_obs = robot_obs.copy()
                 stale_steps = 0
             else:
                 stale_steps += 1
@@ -318,10 +359,27 @@ def main():
                     "Stopping because measured EE position is no longer improving "
                     f"(current={meters_to_cm(err):.2f}cm best={meters_to_cm(best_error):.2f}cm)."
                 )
+                print("Returning to the best measured joint pose.")
+                send_hold_action(robot, best_obs)
                 break
 
             ee_action = advance_towards_target(current_ee, resolved_target_pose)
             joint_action = ik_processor((ee_action, robot_obs))
+            predicted_ee = predicted_ee_pose_from_joint_action(joint_action, kinematics, motor_names)
+            if not predicted_motion_is_progress(
+                current_pose=current_ee,
+                predicted_pose=predicted_ee,
+                target_pose=resolved_target_pose,
+            ):
+                predicted_error = position_error_norm(resolved_target_pose, predicted_ee)
+                print(
+                    "Stopping because IK prediction does not move toward the target "
+                    f"(predicted={meters_to_cm(predicted_error):.2f}cm "
+                    f"current={meters_to_cm(err):.2f}cm)."
+                )
+                print("Returning to the best measured joint pose.")
+                send_hold_action(robot, best_obs)
+                break
             robot.send_action(joint_action)
             precise_sleep(1.0 / FPS)
 

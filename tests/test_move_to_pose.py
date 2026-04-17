@@ -169,3 +169,35 @@ def test_target_reached_requires_gripper_convergence():
     }
 
     assert move_to_pose.target_reached(target_pose, reached_pose) is False
+
+
+def test_predicted_motion_is_progress_requires_error_improvement():
+    current_pose = {"ee.x": 0.0, "ee.y": 0.0, "ee.z": 0.0}
+    target_pose = {"ee.x": 0.1, "ee.y": 0.0, "ee.z": 0.0}
+    better_pose = {"ee.x": 0.02, "ee.y": 0.0, "ee.z": 0.0}
+    same_pose = {"ee.x": 0.0, "ee.y": 0.0, "ee.z": 0.0}
+
+    assert move_to_pose.predicted_motion_is_progress(
+        current_pose=current_pose,
+        predicted_pose=better_pose,
+        target_pose=target_pose,
+    ) is True
+    assert move_to_pose.predicted_motion_is_progress(
+        current_pose=current_pose,
+        predicted_pose=same_pose,
+        target_pose=target_pose,
+    ) is False
+
+
+def test_joint_hold_action_from_observation_copies_joint_positions():
+    observation = {
+        "joint_a.pos": 1.2,
+        "joint_b.pos": -3.4,
+    }
+
+    hold_action = move_to_pose.joint_hold_action_from_observation(observation, ["joint_a", "joint_b"])
+
+    assert hold_action == {
+        "joint_a.pos": 1.2,
+        "joint_b.pos": -3.4,
+    }
