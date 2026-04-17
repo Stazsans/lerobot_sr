@@ -17,9 +17,10 @@
 """
 SO101 真机末端位姿直达脚本。
 
-给定一个或多个目标末端位姿 `(x, y, z, wx, wy, wz, gripper_pos)`，
-脚本会读取当前关节状态，做 FK 获取当前末端位姿，再通过 IK 逐步插值到目标位姿。
-适合单独验证 SO101 的 FK/IK 是否稳定，而不依赖 leader 臂、数据集或策略推理。
+给定一个目标末端位姿 `(x, y, z, wx, wy, wz, gripper_pos)`，
+脚本会反复读取当前关节状态，做 FK 获取当前末端位姿，
+再通过 IK 朝目标逐步推进。这样真机滞后、限幅、或某步 IK 回退时，
+下一步仍会基于当前真实状态继续修正。
 """
 
 from pathlib import Path
@@ -48,37 +49,40 @@ URDF_PATH = REPO_ROOT / "third_party" / "SO-ARM100" / "Simulation" / "SO101" / "
 TARGET_FRAME_NAME = "gripper_frame_link"
 
 FPS = 20
-INTERPOLATION_STEPS = 60
-HOLD_TIME_S = 1.0
-REFINEMENT_PASSES = 1
+MAX_CONTROL_STEPS = 180
+HOLD_TIME_S = 0.5
 POSITION_CONVERGENCE_M = 0.03
+NO_IMPROVEMENT_STEPS = 80
+MIN_ERROR_IMPROVEMENT_M = 0.0005
 
 EE_BOUNDS_MIN = [-0.3186, -0.3973, -0.2272]
 EE_BOUNDS_MAX = [0.4700, 0.3975, 0.5210]
-MAX_EE_STEP_M = 0.08
+MAX_COMMAND_STEP_M = 0.015
+MAX_EE_SAFETY_STEP_M = 0.025
+MAX_GRIPPER_STEP = 5.0
 MAX_JOINT_DELTA_DEG = {
-    "shoulder_pan": 70.0,
-    "shoulder_lift": 70.0,
-    "elbow_flex": 80.0,
-    "wrist_flex": 80.0,
-    "wrist_roll": 140.0,
+    "shoulder_pan": 35.0,
+    "shoulder_lift": 35.0,
+    "elbow_flex": 45.0,
+    "wrist_flex": 45.0,
+    "wrist_roll": 80.0,
 }
 IK_POSITION_TOLERANCE_M = 0.18
 IK_ORIENTATION_TOLERANCE_RAD = 1.8
 USE_TARGET_ORIENTATION = False
+POSE_KEYS = ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"]
+POSITION_KEYS = ["ee.x", "ee.y", "ee.z"]
+ORIENTATION_KEYS = ["ee.wx", "ee.wy", "ee.wz"]
 
-# 只执行一个手动设置的目标点。
-# 可使用绝对目标 "ee.x/y/z/wx/wy/wz"，也可使用相对当前位姿的 "delta.ee.x/y/z/wx/wy/wz"。
-# 当 USE_TARGET_ORIENTATION = False 时，目标中的 ee.wx/wy/wz 会被忽略，末端姿态保持当前值。
 TARGET_POSE = {
     "name": "manual_target",
-    "delta.ee.x": 0.02,
-    "delta.ee.y": 0.02,
-    "delta.ee.z": -0.02,
+    "delta.ee.x": 0.1,
+    "delta.ee.y": 0.1,
+    "delta.ee.z": 0.1,
     "ee.wx": 0.1,
     "ee.wy": 0.1,
     "ee.wz": 1.3,
-    "ee.gripper_pos": 39.0,
+    "ee.gripper_pos": 20.0,
 }
 # ==============================
 
@@ -99,8 +103,8 @@ def build_processors(robot: SO101Follower, kinematics: RobotKinematics):
         steps=[
             EEBoundsAndSafety(
                 end_effector_bounds={"min": EE_BOUNDS_MIN, "max": EE_BOUNDS_MAX},
-                max_ee_step_m=MAX_EE_STEP_M,
-                max_orientation_step_rad=0.8,
+                max_ee_step_m=MAX_EE_SAFETY_STEP_M,
+                max_orientation_step_rad=0.8 if USE_TARGET_ORIENTATION else None,
             ),
             InverseKinematicsEEToJoints(
                 kinematics=kinematics,
@@ -119,23 +123,18 @@ def build_processors(robot: SO101Follower, kinematics: RobotKinematics):
     return fk_processor, ik_processor
 
 
-def interpolate_ee_pose(
-    start_pose: dict[str, float],
-    target_pose: dict[str, float],
-    alpha: float,
-) -> dict[str, float]:
-    interpolated = {"name": target_pose.get("name", "target")}
-    for key in ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"]:
-        start_value = float(start_pose[key])
-        target_value = float(target_pose[key])
-        interpolated[key] = (1.0 - alpha) * start_value + alpha * target_value
-    return interpolated
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
+def clip_delta(value: float, max_abs_delta: float) -> float:
+    return clamp(value, -max_abs_delta, max_abs_delta)
 
 
 def resolve_target_pose(current_pose: dict[str, float], target_pose: dict[str, float]) -> dict[str, float]:
     resolved = {"name": target_pose.get("name", "target")}
-    for key in ["ee.x", "ee.y", "ee.z", "ee.wx", "ee.wy", "ee.wz", "ee.gripper_pos"]:
-        if key in ["ee.wx", "ee.wy", "ee.wz"] and not USE_TARGET_ORIENTATION:
+    for key in POSE_KEYS:
+        if key in ORIENTATION_KEYS and not USE_TARGET_ORIENTATION:
             resolved[key] = float(current_pose[key])
             continue
 
@@ -145,6 +144,14 @@ def resolve_target_pose(current_pose: dict[str, float], target_pose: dict[str, f
             delta_key = f"delta.{key}"
             resolved[key] = float(current_pose[key]) + float(target_pose.get(delta_key, 0.0))
     return resolved
+
+
+def clip_target_pose_to_bounds(target_pose: dict[str, float]) -> dict[str, float]:
+    clipped = dict(target_pose)
+    for idx, key in enumerate(POSITION_KEYS):
+        clipped[key] = clamp(float(clipped[key]), EE_BOUNDS_MIN[idx], EE_BOUNDS_MAX[idx])
+    clipped["ee.gripper_pos"] = clamp(float(clipped["ee.gripper_pos"]), 0.0, 100.0)
+    return clipped
 
 
 def print_ee_pose(prefix: str, pose: dict[str, float]) -> None:
@@ -170,13 +177,36 @@ def position_error_norm(target_pose: dict[str, float], reached_pose: dict[str, f
     return float((dx**2 + dy**2 + dz**2) ** 0.5)
 
 
-def refresh_target_orientation_from_current(
-    target_pose: dict[str, float], current_pose: dict[str, float]
+def advance_towards_target(
+    current_pose: dict[str, float],
+    target_pose: dict[str, float],
 ) -> dict[str, float]:
-    refreshed = dict(target_pose)
-    for key in ["ee.wx", "ee.wy", "ee.wz"]:
-        refreshed[key] = float(current_pose[key])
-    return refreshed
+    step_pose = {"name": target_pose.get("name", "target")}
+
+    dx = float(target_pose["ee.x"]) - float(current_pose["ee.x"])
+    dy = float(target_pose["ee.y"]) - float(current_pose["ee.y"])
+    dz = float(target_pose["ee.z"]) - float(current_pose["ee.z"])
+    distance = (dx**2 + dy**2 + dz**2) ** 0.5
+    alpha = 1.0 if distance <= MAX_COMMAND_STEP_M or distance == 0.0 else MAX_COMMAND_STEP_M / distance
+
+    step_pose["ee.x"] = float(current_pose["ee.x"]) + dx * alpha
+    step_pose["ee.y"] = float(current_pose["ee.y"]) + dy * alpha
+    step_pose["ee.z"] = float(current_pose["ee.z"]) + dz * alpha
+
+    if USE_TARGET_ORIENTATION:
+        for key in ORIENTATION_KEYS:
+            step_pose[key] = float(current_pose[key]) + (
+                float(target_pose[key]) - float(current_pose[key])
+            ) * alpha
+    else:
+        for key in ORIENTATION_KEYS:
+            step_pose[key] = float(current_pose[key])
+
+    gripper_delta = float(target_pose["ee.gripper_pos"]) - float(current_pose["ee.gripper_pos"])
+    step_pose["ee.gripper_pos"] = float(current_pose["ee.gripper_pos"]) + clip_delta(
+        gripper_delta, MAX_GRIPPER_STEP
+    )
+    return step_pose
 
 
 def main():
@@ -201,40 +231,44 @@ def main():
         print_ee_pose("Current EE:", current_ee)
 
         start_pose = {key: float(current_ee[key]) for key in current_ee if key.startswith("ee.")}
-        resolved_target_pose = resolve_target_pose(start_pose, TARGET_POSE)
+        resolved_target_pose = clip_target_pose_to_bounds(resolve_target_pose(start_pose, TARGET_POSE))
 
         print(f"\nMoving to target: {resolved_target_pose.get('name', 'target')}")
         print_ee_pose("Target EE :", resolved_target_pose)
 
         best_error = float("inf")
-        for pass_idx in range(1, REFINEMENT_PASSES + 1):
-            if pass_idx > 1:
-                print(f"\nRefinement pass {pass_idx}/{REFINEMENT_PASSES}")
-                if not USE_TARGET_ORIENTATION:
-                    resolved_target_pose = refresh_target_orientation_from_current(resolved_target_pose, start_pose)
-                    print_ee_pose("Refined target EE :", resolved_target_pose)
-
-            for step in range(1, INTERPOLATION_STEPS + 1):
-                alpha = step / INTERPOLATION_STEPS
-                ee_action = interpolate_ee_pose(start_pose, resolved_target_pose, alpha)
-                robot_obs = robot.get_observation()
-                joint_action = ik_processor((ee_action, robot_obs))
-                robot.send_action(joint_action)
-                precise_sleep(1.0 / FPS)
-
-            precise_sleep(HOLD_TIME_S)
+        stale_steps = 0
+        for step in range(1, MAX_CONTROL_STEPS + 1):
             robot_obs = robot.get_observation()
             current_ee = fk_processor(robot_obs.copy())
             err = position_error_norm(resolved_target_pose, current_ee)
-            print_ee_pose("Reached EE:", current_ee)
-            print_target_error(resolved_target_pose, current_ee)
-            if err >= best_error:
-                print("Stopping refinement because position error did not improve.")
-                break
-            best_error = err
+            if step == 1 or step % FPS == 0:
+                print(f"Step {step:03d}: position error {err:.4f}m")
             if err <= POSITION_CONVERGENCE_M:
                 break
-            start_pose = {key: float(current_ee[key]) for key in current_ee if key.startswith("ee.")}
+
+            if err < best_error - MIN_ERROR_IMPROVEMENT_M:
+                best_error = err
+                stale_steps = 0
+            else:
+                stale_steps += 1
+            if stale_steps >= NO_IMPROVEMENT_STEPS:
+                print(
+                    "Stopping because measured EE position is no longer improving "
+                    f"(current={err:.4f}m best={best_error:.4f}m)."
+                )
+                break
+
+            ee_action = advance_towards_target(current_ee, resolved_target_pose)
+            joint_action = ik_processor((ee_action, robot_obs))
+            robot.send_action(joint_action)
+            precise_sleep(1.0 / FPS)
+
+        precise_sleep(HOLD_TIME_S)
+        robot_obs = robot.get_observation()
+        current_ee = fk_processor(robot_obs.copy())
+        print_ee_pose("Reached EE:", current_ee)
+        print_target_error(resolved_target_pose, current_ee)
 
     finally:
         robot.disconnect()
