@@ -63,6 +63,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     ForwardKinematicsJointsToEE,
     InverseKinematicsEEToJoints,
+    derive_ik_joint_preferences_from_robot,
 )
 from lerobot.transport import (
     services_pb2,  # type: ignore
@@ -274,6 +275,10 @@ def main():
         use_degrees=True,
     )
     robot = SO101Follower(follower_config)
+    ik_preferences = derive_ik_joint_preferences_from_robot(
+        robot,
+        motor_names=list(robot.bus.motors.keys()),
+    )
 
     kinematics_solver = RobotKinematics(
         urdf_path=str(URDF_PATH),
@@ -303,6 +308,8 @@ def main():
                 kinematics=kinematics_solver,
                 motor_names=list(robot.bus.motors.keys()),
                 initial_guess_current_joints=True,
+                continuous_joint_names=ik_preferences.continuous_joint_names,
+                joint_position_limits_deg=ik_preferences.joint_position_limits_deg,
             ),
         ],
         to_transition=robot_action_observation_to_transition,

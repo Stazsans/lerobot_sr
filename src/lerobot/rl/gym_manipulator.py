@@ -63,6 +63,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     ForwardKinematicsJointsToEEObservation,
     GripperVelocityToJoint,
     InverseKinematicsRLStep,
+    derive_ik_joint_preferences_from_robot,
 )
 from lerobot.teleoperators import (
     gamepad,  # noqa: F401
@@ -394,6 +395,7 @@ def make_processors(
     # Full processor pipeline for real robot environment
     # Get robot and motor information for kinematics
     motor_names = list(env.robot.bus.motors.keys())
+    ik_preferences = derive_ik_joint_preferences_from_robot(env.robot, motor_names=motor_names)
 
     # Set up kinematics solver if inverse kinematics is configured
     kinematics_solver = None
@@ -493,7 +495,11 @@ def make_processors(
                 discrete_gripper=True,
             ),
             InverseKinematicsRLStep(
-                kinematics=kinematics_solver, motor_names=motor_names, initial_guess_current_joints=False
+                kinematics=kinematics_solver,
+                motor_names=motor_names,
+                initial_guess_current_joints=False,
+                continuous_joint_names=ik_preferences.continuous_joint_names,
+                joint_position_limits_deg=ik_preferences.joint_position_limits_deg,
             ),
         ]
         action_pipeline_steps.extend(inverse_kinematics_steps)

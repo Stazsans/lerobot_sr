@@ -46,6 +46,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     ForwardKinematicsJointsToEE,
     InverseKinematicsEEToJoints,
+    derive_ik_joint_preferences_from_robot,
 )
 from lerobot.scripts.lerobot_record import record_loop
 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
@@ -91,6 +92,10 @@ PLAY_SOUNDS = True
 
 def build_ee_processors(follower, leader):
     """构建 EE 位姿空间的 FK/IK 处理管线。"""
+    ik_preferences = derive_ik_joint_preferences_from_robot(
+        follower,
+        motor_names=list(follower.bus.motors.keys()),
+    )
     follower_kin = RobotKinematics(
         urdf_path=str(URDF_PATH),
         target_frame_name=TARGET_FRAME_NAME,
@@ -135,6 +140,8 @@ def build_ee_processors(follower, leader):
                 kinematics=follower_kin,
                 motor_names=list(follower.bus.motors.keys()),
                 initial_guess_current_joints=True,
+                continuous_joint_names=ik_preferences.continuous_joint_names,
+                joint_position_limits_deg=ik_preferences.joint_position_limits_deg,
             ),
         ],
         to_transition=robot_action_observation_to_transition,

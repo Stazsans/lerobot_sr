@@ -40,6 +40,7 @@ from lerobot.robots.so_follower.robot_kinematic_processor import (
     EEBoundsAndSafety,
     ForwardKinematicsJointsToEE,
     InverseKinematicsEEToJoints,
+    derive_ik_joint_preferences_from_robot,
 )
 from lerobot.teleoperators.so_leader import SO101Leader, SO101LeaderConfig
 from lerobot.utils.robot_utils import precise_sleep
@@ -62,6 +63,10 @@ def main():
 
     follower = SO101Follower(follower_config)
     leader = SO101Leader(leader_config)
+    ik_preferences = derive_ik_joint_preferences_from_robot(
+        follower,
+        motor_names=list(follower.bus.motors.keys()),
+    )
 
     follower_kinematics_solver = RobotKinematics(
         urdf_path=str(URDF_PATH),
@@ -97,6 +102,8 @@ def main():
                 kinematics=follower_kinematics_solver,
                 motor_names=list(follower.bus.motors.keys()),
                 initial_guess_current_joints=False,
+                continuous_joint_names=ik_preferences.continuous_joint_names,
+                joint_position_limits_deg=ik_preferences.joint_position_limits_deg,
             ),
         ],
         to_transition=robot_action_observation_to_transition,

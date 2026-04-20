@@ -15,6 +15,8 @@
 # limitations under the License.
 
 import logging
+from itertools import combinations, product
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +24,7 @@ import numpy as np
 
 from lerobot.configs.types import FeatureType, PipelineFeatureType, PolicyFeature
 from lerobot.model.kinematics import RobotKinematics
+from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.processor import (
     EnvTransition,
     ObservationProcessorStep,
@@ -46,12 +49,132 @@ DEFAULT_SO_ARM_IK_SEED_OFFSETS_DEG = {
 }
 
 
+DEFAULT_SO_ARM_IK_SEED_SAMPLE_OFFSETS_DEG = {
+    "shoulder_pan": [-90.0, -45.0, 0.0, 45.0, 90.0],
+    "shoulder_lift": [-45.0, 0.0, 45.0],
+    "elbow_flex": [-90.0, -45.0, 0.0, 45.0, 90.0],
+    "wrist_flex": [-90.0, -45.0, 0.0, 45.0, 90.0],
+    "wrist_roll": [-180.0, -90.0, 0.0, 90.0, 180.0],
+    "gripper": [0.0],
+}
+
+DEFAULT_SO_ARM_IK_SEED_COMBINATION_ORDER = 2
+DEFAULT_SO_ARM_IK_MAX_SEED_COMBINATION_CANDIDATES = 192
+
+
+@dataclass(frozen=True)
+class IKJointPreferences:
+    joint_position_limits_deg: dict[str, tuple[float, float]]
+    continuous_joint_names: tuple[str, ...] = ()
+
+
+def _degrees_limits_from_calibration(
+    calibration: MotorCalibration,
+    *,
+    max_resolution: int,
+) -> tuple[float, float]:
+    mid = (calibration.range_min + calibration.range_max) / 2
+    min_limit = (calibration.range_min - mid) * 360 / max_resolution
+    max_limit = (calibration.range_max - mid) * 360 / max_resolution
+    return (float(min(min_limit, max_limit)), float(max(min_limit, max_limit)))
+
+
+def _covers_full_turn(
+    calibration: MotorCalibration,
+    *,
+    max_resolution: int,
+    min_span_ratio: float,
+) -> bool:
+    span = abs(calibration.range_max - calibration.range_min)
+    return bool(span >= max_resolution * min_span_ratio)
+
+
+def derive_ik_joint_preferences(
+    *,
+    motors: dict[str, Motor],
+    calibration: dict[str, MotorCalibration],
+    model_resolution_table: dict[str, int],
+    motor_names: Sequence[str] | None = None,
+    full_turn_span_ratio: float = 0.98,
+) -> IKJointPreferences:
+    joint_position_limits_deg: dict[str, tuple[float, float]] = {}
+    continuous_joint_names: list[str] = []
+
+    for motor_name in motor_names or tuple(motors):
+        motor = motors.get(motor_name)
+        motor_calibration = calibration.get(motor_name)
+        if motor is None or motor_calibration is None:
+            continue
+
+        if motor.norm_mode is MotorNormMode.DEGREES:
+            max_resolution = model_resolution_table.get(motor.model)
+            if max_resolution is None:
+                logger.debug("Missing model resolution for %s (%s); skipping IK limits.", motor_name, motor.model)
+                continue
+
+            max_resolution -= 1
+            if _covers_full_turn(
+                motor_calibration,
+                max_resolution=max_resolution,
+                min_span_ratio=full_turn_span_ratio,
+            ):
+                continuous_joint_names.append(motor_name)
+                continue
+
+            joint_position_limits_deg[motor_name] = _degrees_limits_from_calibration(
+                motor_calibration,
+                max_resolution=max_resolution,
+            )
+        elif motor.norm_mode is MotorNormMode.RANGE_0_100:
+            joint_position_limits_deg[motor_name] = (0.0, 100.0)
+        elif motor.norm_mode is MotorNormMode.RANGE_M100_100:
+            joint_position_limits_deg[motor_name] = (-100.0, 100.0)
+
+    return IKJointPreferences(
+        joint_position_limits_deg=joint_position_limits_deg,
+        continuous_joint_names=tuple(continuous_joint_names),
+    )
+
+
+def derive_ik_joint_preferences_from_robot(
+    robot: Any,
+    *,
+    motor_names: Sequence[str] | None = None,
+    full_turn_span_ratio: float = 0.98,
+) -> IKJointPreferences:
+    bus = getattr(robot, "bus", None)
+    if bus is None:
+        logger.debug("Robot %s has no motor bus; skipping IK preference derivation.", type(robot).__name__)
+        return IKJointPreferences(joint_position_limits_deg={}, continuous_joint_names=())
+
+    return derive_ik_joint_preferences(
+        motors=getattr(bus, "motors", {}),
+        calibration=getattr(bus, "calibration", {}),
+        model_resolution_table=getattr(bus, "model_resolution_table", {}),
+        motor_names=motor_names,
+        full_turn_span_ratio=full_turn_span_ratio,
+    )
+
+
+def _finite_array(values: Any, *, name: str, shape: tuple[int, ...] | None = None) -> np.ndarray:
+    array = np.asarray(values, dtype=float)
+    if shape is not None and array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    if not np.isfinite(array).all():
+        raise ValueError(f"{name} must contain only finite values")
+    return array
+
+
 def _ordered_joint_positions(joints: dict[str, Any], motor_names: list[str]) -> np.ndarray:
     missing = [name for name in motor_names if f"{name}.pos" not in joints]
     if missing:
         missing_str = ", ".join(missing)
         raise ValueError(f"Missing joint observations/actions for motors: {missing_str}")
-    return np.array([float(joints[f"{name}.pos"]) for name in motor_names], dtype=float)
+    return _finite_array(
+        [joints[f"{name}.pos"] for name in motor_names],
+        name="joint positions",
+        shape=(len(motor_names),),
+    )
 
 
 def _active_joint_mask(motor_names: list[str]) -> np.ndarray:
@@ -62,7 +185,23 @@ def _angle_delta_deg(target: np.ndarray, reference: np.ndarray) -> np.ndarray:
     return (target - reference + 180.0) % 360.0 - 180.0
 
 
+def _joint_delta_deg(
+    target: np.ndarray,
+    reference: np.ndarray,
+    motor_names: list[str],
+    continuous_joint_names: Sequence[str] = (),
+) -> np.ndarray:
+    delta = target - reference
+    continuous = set(continuous_joint_names)
+    if continuous:
+        continuous_mask = np.array([name in continuous for name in motor_names], dtype=bool)
+        delta[continuous_mask] = _angle_delta_deg(target[continuous_mask], reference[continuous_mask])
+    return delta
+
+
 def _rotation_error_rad(desired_pose: np.ndarray, actual_pose: np.ndarray) -> float:
+    desired_pose = _finite_array(desired_pose, name="desired pose", shape=(4, 4))
+    actual_pose = _finite_array(actual_pose, name="actual pose", shape=(4, 4))
     delta = desired_pose[:3, :3].T @ actual_pose[:3, :3]
     cos_theta = np.clip((np.trace(delta) - 1.0) / 2.0, -1.0, 1.0)
     return float(np.arccos(cos_theta))
@@ -76,6 +215,22 @@ def _per_joint_values(
     if isinstance(values, dict):
         return np.array([float(values.get(name, default)) for name in motor_names], dtype=float)
     return np.full(len(motor_names), float(values), dtype=float)
+
+
+def _per_joint_sequences(
+    values: dict[str, Sequence[float]] | None, motor_names: list[str], default: Sequence[float]
+) -> list[list[float]]:
+    if values is None:
+        return [list(default) for _ in motor_names]
+    return [list(values.get(name, default)) for name in motor_names]
+
+
+def _per_joint_limits(
+    values: dict[str, tuple[float, float]] | None, motor_names: list[str]
+) -> list[tuple[float, float] | None]:
+    if values is None:
+        return [None for _ in motor_names]
+    return [values.get(name) for name in motor_names]
 
 
 def _unique_joint_vectors(candidates: list[np.ndarray]) -> list[np.ndarray]:
@@ -96,6 +251,9 @@ def _build_ik_seed_candidates(
     previous_solution: np.ndarray | None,
     motor_names: list[str],
     seed_joint_offsets_deg: float | dict[str, float] | None,
+    seed_joint_sample_offsets_deg: dict[str, Sequence[float]] | None,
+    seed_joint_combination_order: int,
+    max_seed_combination_candidates: int,
 ) -> list[np.ndarray]:
     candidates = [preferred_seed, current_joint_pos]
 
@@ -123,6 +281,44 @@ def _build_ik_seed_candidates(
         minus[idx] -= offset
         candidates.append(minus)
 
+    sample_offsets = _per_joint_sequences(
+        seed_joint_sample_offsets_deg if seed_joint_sample_offsets_deg is not None else DEFAULT_SO_ARM_IK_SEED_SAMPLE_OFFSETS_DEG,
+        motor_names,
+        [0.0],
+    )
+    combination_offsets: dict[int, list[float]] = {}
+    for idx, (motor_name, offsets) in enumerate(zip(motor_names, sample_offsets, strict=True)):
+        if motor_name == "gripper":
+            continue
+        combination_offsets[idx] = [float(offset) for offset in offsets if float(offset) != 0.0]
+        for offset in offsets:
+            sampled = current_joint_pos.copy()
+            sampled[idx] += float(offset)
+            candidates.append(sampled)
+
+    if seed_joint_combination_order >= 2 and max_seed_combination_candidates > 0:
+        anchors = _unique_joint_vectors(
+            [
+                current_joint_pos,
+                preferred_seed,
+                previous_solution if previous_solution is not None else current_joint_pos,
+            ]
+        )
+        active_indices = [idx for idx, offsets in combination_offsets.items() if offsets]
+        generated = 0
+        for combination_size in range(2, seed_joint_combination_order + 1):
+            for subset in combinations(active_indices, combination_size):
+                offset_sets = [combination_offsets[idx] for idx in subset]
+                for anchor in anchors:
+                    for chosen_offsets in product(*offset_sets):
+                        sampled = anchor.copy()
+                        for idx, offset in zip(subset, chosen_offsets, strict=True):
+                            sampled[idx] += float(offset)
+                        candidates.append(sampled)
+                        generated += 1
+                        if generated >= max_seed_combination_candidates:
+                            return _unique_joint_vectors(candidates)
+
     return _unique_joint_vectors(candidates)
 
 
@@ -135,16 +331,25 @@ def _score_ik_candidate(
     preferred_seed: np.ndarray,
     motor_names: list[str],
     max_joint_delta_deg: float | dict[str, float] | None,
+    continuous_joint_names: Sequence[str],
+    joint_position_limits_deg: dict[str, tuple[float, float]] | None,
+    prioritize_orientation: bool,
     position_tolerance_m: float,
     orientation_tolerance_rad: float,
 ) -> dict[str, Any]:
+    candidate = _finite_array(candidate, name="IK candidate", shape=current_joint_pos.shape)
     achieved_pose = kinematics.forward_kinematics(candidate)
+    achieved_pose = _finite_array(achieved_pose, name="achieved pose", shape=(4, 4))
     position_error = float(np.linalg.norm(desired_pose[:3, 3] - achieved_pose[:3, 3]))
     orientation_error = _rotation_error_rad(desired_pose, achieved_pose)
 
     active_mask = _active_joint_mask(motor_names)
-    current_delta = np.abs(_angle_delta_deg(candidate, current_joint_pos))[active_mask]
-    preferred_delta = np.abs(_angle_delta_deg(candidate, preferred_seed))[active_mask]
+    current_delta = np.abs(
+        _joint_delta_deg(candidate, current_joint_pos, motor_names, continuous_joint_names)
+    )[active_mask]
+    preferred_delta = np.abs(
+        _joint_delta_deg(candidate, preferred_seed, motor_names, continuous_joint_names)
+    )[active_mask]
     delta_limits = _per_joint_values(max_joint_delta_deg, motor_names, np.inf)[active_mask]
     over_limit = np.clip(current_delta - delta_limits, 0.0, None)
 
@@ -152,8 +357,23 @@ def _score_ik_candidate(
     max_joint_delta = float(current_delta.max()) if current_delta.size else 0.0
     mean_joint_delta = float(current_delta.mean()) if current_delta.size else 0.0
     mean_preferred_delta = float(preferred_delta.mean()) if preferred_delta.size else 0.0
+    per_joint_limits = _per_joint_limits(joint_position_limits_deg, motor_names)
+    joint_limit_margins = []
+    limit_violations = []
+    for idx, limits in enumerate(per_joint_limits):
+        if idx >= len(candidate):
+            break
+        if limits is None or motor_names[idx] == "gripper":
+            continue
+        low, high = limits
+        value = float(candidate[idx])
+        margin = min(value - low, high - value)
+        joint_limit_margins.append(margin)
+        limit_violations.append(max(low - value, value - high, 0.0))
+    min_joint_limit_margin = min(joint_limit_margins) if joint_limit_margins else float("inf")
+    max_joint_limit_violation = max(limit_violations) if limit_violations else 0.0
 
-    is_unsafe = bool(np.any(over_limit > 0.0))
+    is_unsafe = bool(np.any(over_limit > 0.0) or max_joint_limit_violation > 0.0)
     pose_invalid = bool(
         position_error > position_tolerance_m or orientation_error > orientation_tolerance_rad
     )
@@ -166,14 +386,19 @@ def _score_ik_candidate(
         "mean_joint_delta_deg": mean_joint_delta,
         "mean_preferred_delta_deg": mean_preferred_delta,
         "max_over_limit_deg": max_over_limit,
+        "min_joint_limit_margin_deg": float(min_joint_limit_margin),
+        "max_joint_limit_violation_deg": float(max_joint_limit_violation),
         "is_unsafe": is_unsafe,
         "pose_invalid": pose_invalid,
         "sort_key": (
             int(is_unsafe),
             int(pose_invalid),
+            max_joint_limit_violation,
             max_over_limit,
+            orientation_error if prioritize_orientation else position_error,
             position_error,
-            orientation_error,
+            orientation_error if not prioritize_orientation else position_error,
+            -min_joint_limit_margin,
             max_joint_delta,
             mean_joint_delta,
             mean_preferred_delta,
@@ -190,11 +415,17 @@ def _solve_best_ik_solution(
     previous_solution: np.ndarray | None,
     prefer_current_joints: bool,
     max_joint_delta_deg: float | dict[str, float] | None,
+    continuous_joint_names: Sequence[str],
     seed_joint_offsets_deg: float | dict[str, float] | None,
+    seed_joint_sample_offsets_deg: dict[str, Sequence[float]] | None,
+    seed_joint_combination_order: int,
+    max_seed_combination_candidates: int,
+    joint_position_limits_deg: dict[str, tuple[float, float]] | None,
+    prioritize_orientation: bool,
     position_tolerance_m: float,
     orientation_tolerance_rad: float,
     fallback_to_current_joints_on_invalid: bool,
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, Any]]]:
     preferred_seed = (
         current_joint_pos
         if prefer_current_joints or previous_solution is None
@@ -208,6 +439,9 @@ def _solve_best_ik_solution(
         previous_solution=previous_solution,
         motor_names=motor_names,
         seed_joint_offsets_deg=seed_joint_offsets_deg,
+        seed_joint_sample_offsets_deg=seed_joint_sample_offsets_deg,
+        seed_joint_combination_order=seed_joint_combination_order,
+        max_seed_combination_candidates=max_seed_combination_candidates,
     ):
         try:
             candidate = kinematics.inverse_kinematics(seed, desired_pose)
@@ -220,6 +454,9 @@ def _solve_best_ik_solution(
                     preferred_seed=preferred_seed,
                     motor_names=motor_names,
                     max_joint_delta_deg=max_joint_delta_deg,
+                    continuous_joint_names=continuous_joint_names,
+                    joint_position_limits_deg=joint_position_limits_deg,
+                    prioritize_orientation=prioritize_orientation,
                     position_tolerance_m=position_tolerance_m,
                     orientation_tolerance_rad=orientation_tolerance_rad,
                 )
@@ -229,9 +466,11 @@ def _solve_best_ik_solution(
 
     if not scored_candidates:
         logger.warning("IK failed for all seeds, holding current joints.")
-        return current_joint_pos.copy()
+        return current_joint_pos.copy(), current_joint_pos.copy(), []
 
-    best = min(scored_candidates, key=lambda item: item["sort_key"])
+    scored_candidates.sort(key=lambda item: item["sort_key"])
+    best = scored_candidates[0]
+    raw_best_candidate = best["candidate"].copy()
     if fallback_to_current_joints_on_invalid and (best["is_unsafe"] or best["pose_invalid"]):
         logger.warning(
             "Rejecting IK candidate: unsafe=%s pose_invalid=%s pos_err=%.4fm ori_err=%.4frad max_dq=%.2fdeg. Holding current joints.",
@@ -241,9 +480,9 @@ def _solve_best_ik_solution(
             best["orientation_error_rad"],
             best["max_joint_delta_deg"],
         )
-        return current_joint_pos.copy()
+        return current_joint_pos.copy(), raw_best_candidate, scored_candidates
 
-    return best["candidate"].copy()
+    return raw_best_candidate.copy(), raw_best_candidate, scored_candidates
 
 
 def _select_reference_joint_positions(
@@ -253,6 +492,7 @@ def _select_reference_joint_positions(
     motor_names: list[str],
     use_ik_solution: bool,
     max_ik_tracking_error_deg: float | dict[str, float] | None,
+    continuous_joint_names: Sequence[str] = (),
 ) -> np.ndarray:
     measured_joint_pos = _ordered_joint_positions(observation, motor_names)
 
@@ -268,7 +508,9 @@ def _select_reference_joint_positions(
         return measured_joint_pos
 
     active_mask = _active_joint_mask(motor_names)
-    tracking_error = np.abs(_angle_delta_deg(ik_solution, measured_joint_pos))[active_mask]
+    tracking_error = np.abs(
+        _joint_delta_deg(ik_solution, measured_joint_pos, motor_names, continuous_joint_names)
+    )[active_mask]
     tracking_limits = _per_joint_values(max_ik_tracking_error_deg, motor_names, np.inf)[active_mask]
     over_limit = np.clip(tracking_error - tracking_limits, 0.0, None)
 
@@ -281,6 +523,81 @@ def _select_reference_joint_positions(
         return measured_joint_pos
 
     return ik_solution.copy()
+
+
+def _resolve_joint_action_from_ee_target(
+    *,
+    action: RobotAction,
+    observation: RobotObservation | None,
+    kinematics: RobotKinematics,
+    motor_names: list[str],
+    previous_solution: np.ndarray | None,
+    prefer_current_joints: bool,
+    max_joint_delta_deg: float | dict[str, float] | None,
+    continuous_joint_names: Sequence[str],
+    seed_joint_offsets_deg: float | dict[str, float] | None,
+    seed_joint_sample_offsets_deg: dict[str, Sequence[float]] | None,
+    seed_joint_combination_order: int,
+    max_seed_combination_candidates: int,
+    joint_position_limits_deg: dict[str, tuple[float, float]] | None,
+    prioritize_orientation: bool,
+    position_tolerance_m: float,
+    orientation_tolerance_rad: float,
+    fallback_to_current_joints_on_invalid: bool,
+) -> tuple[RobotAction, np.ndarray, list[dict[str, Any]]]:
+    action = dict(action)
+
+    x = action.pop("ee.x")
+    y = action.pop("ee.y")
+    z = action.pop("ee.z")
+    wx = action.pop("ee.wx")
+    wy = action.pop("ee.wy")
+    wz = action.pop("ee.wz")
+    gripper_pos = action.pop("ee.gripper_pos")
+
+    if None in (x, y, z, wx, wy, wz, gripper_pos):
+        raise ValueError(
+            "Missing required end-effector pose components: "
+            "ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz, ee.gripper_pos must all be present in action"
+        )
+
+    if observation is None:
+        raise ValueError("Joints observation is require for computing robot kinematics")
+    observation = observation.copy()
+
+    q_raw = _ordered_joint_positions(observation, motor_names)
+
+    t_des = np.eye(4, dtype=float)
+    t_des[:3, :3] = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
+    t_des[:3, 3] = [x, y, z]
+
+    q_target, q_raw_target, diagnostics = _solve_best_ik_solution(
+        kinematics=kinematics,
+        motor_names=motor_names,
+        current_joint_pos=q_raw,
+        desired_pose=t_des,
+        previous_solution=previous_solution,
+        prefer_current_joints=prefer_current_joints,
+        max_joint_delta_deg=max_joint_delta_deg,
+        continuous_joint_names=continuous_joint_names,
+        seed_joint_offsets_deg=seed_joint_offsets_deg,
+        seed_joint_sample_offsets_deg=seed_joint_sample_offsets_deg,
+        seed_joint_combination_order=seed_joint_combination_order,
+        max_seed_combination_candidates=max_seed_combination_candidates,
+        joint_position_limits_deg=joint_position_limits_deg,
+        prioritize_orientation=prioritize_orientation,
+        position_tolerance_m=position_tolerance_m,
+        orientation_tolerance_rad=orientation_tolerance_rad,
+        fallback_to_current_joints_on_invalid=fallback_to_current_joints_on_invalid,
+    )
+
+    for i, name in enumerate(motor_names):
+        if name != "gripper":
+            action[f"{name}.pos"] = float(q_target[i])
+        else:
+            action["gripper.pos"] = float(gripper_pos)
+
+    return action, q_target, q_raw_target, diagnostics
 
 
 @ProcessorStepRegistry.register("ee_reference_and_delta")
@@ -320,6 +637,7 @@ class EEReferenceAndDelta(RobotActionProcessorStep):
     )
     use_ik_solution: bool = False
     max_ik_tracking_error_deg: float | dict[str, float] | None = 5.0
+    continuous_joint_names: Sequence[str] = ()
 
     reference_ee_pose: np.ndarray | None = field(default=None, init=False, repr=False)
     _prev_enabled: bool = field(default=False, init=False, repr=False)
@@ -338,6 +656,7 @@ class EEReferenceAndDelta(RobotActionProcessorStep):
             motor_names=self.motor_names,
             use_ik_solution=self.use_ik_solution,
             max_ik_tracking_error_deg=self.max_ik_tracking_error_deg,
+            continuous_joint_names=self.continuous_joint_names,
         )
 
         # Current pose from FK on measured joints
@@ -444,6 +763,8 @@ class EEBoundsAndSafety(RobotActionProcessorStep):
     end_effector_bounds: dict
     max_ee_step_m: float = 0.05
     max_orientation_step_rad: float | None = 0.35
+    kinematics: RobotKinematics | None = None
+    motor_names: list[str] | None = None
     _last_pos: np.ndarray | None = field(default=None, init=False, repr=False)
     _last_twist: np.ndarray | None = field(default=None, init=False, repr=False)
 
@@ -461,11 +782,27 @@ class EEBoundsAndSafety(RobotActionProcessorStep):
                 "Missing required end-effector pose components: x, y, z, wx, wy, wz must all be present in action"
             )
 
-        pos = np.array([x, y, z], dtype=float)
-        twist = np.array([wx, wy, wz], dtype=float)
+        if self._last_pos is None and self.kinematics is not None and self.motor_names is not None:
+            observation = self.transition.get(TransitionKey.OBSERVATION)
+            if observation is not None:
+                q_raw = _ordered_joint_positions(observation, self.motor_names)
+                current_pose = _finite_array(
+                    self.kinematics.forward_kinematics(q_raw), name="current end-effector pose", shape=(4, 4)
+                )
+                self._last_pos = current_pose[:3, 3].astype(float, copy=True)
+                self._last_twist = Rotation.from_matrix(current_pose[:3, :3]).as_rotvec().astype(
+                    float, copy=True
+                )
+
+        pos = _finite_array([x, y, z], name="end-effector position", shape=(3,))
+        twist = _finite_array([wx, wy, wz], name="end-effector orientation", shape=(3,))
 
         # Clip position
-        pos = np.clip(pos, self.end_effector_bounds["min"], self.end_effector_bounds["max"])
+        bounds_min = _finite_array(self.end_effector_bounds["min"], name="end-effector min bounds", shape=(3,))
+        bounds_max = _finite_array(self.end_effector_bounds["max"], name="end-effector max bounds", shape=(3,))
+        if np.any(bounds_min > bounds_max):
+            raise ValueError("end-effector min bounds must be <= max bounds")
+        pos = np.clip(pos, bounds_min, bounds_max)
 
         # Check for jumps in position
         if self._last_pos is not None:
@@ -529,59 +866,42 @@ class InverseKinematicsEEToJoints(RobotActionProcessorStep):
     q_curr: np.ndarray | None = field(default=None, init=False, repr=False)
     initial_guess_current_joints: bool = True
     max_joint_delta_deg: float | dict[str, float] | None = 35.0
+    continuous_joint_names: Sequence[str] = ()
     seed_joint_offsets_deg: float | dict[str, float] | None = field(
         default_factory=lambda: DEFAULT_SO_ARM_IK_SEED_OFFSETS_DEG.copy()
     )
+    seed_joint_sample_offsets_deg: dict[str, Sequence[float]] | None = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_SO_ARM_IK_SEED_SAMPLE_OFFSETS_DEG.items()}
+    )
+    seed_joint_combination_order: int = DEFAULT_SO_ARM_IK_SEED_COMBINATION_ORDER
+    max_seed_combination_candidates: int = DEFAULT_SO_ARM_IK_MAX_SEED_COMBINATION_CANDIDATES
+    joint_position_limits_deg: dict[str, tuple[float, float]] | None = None
+    prioritize_orientation: bool = True
     position_tolerance_m: float = 0.02
     orientation_tolerance_rad: float = 0.35
     fallback_to_current_joints_on_invalid: bool = True
 
     def action(self, action: RobotAction) -> RobotAction:
-        x = action.pop("ee.x")
-        y = action.pop("ee.y")
-        z = action.pop("ee.z")
-        wx = action.pop("ee.wx")
-        wy = action.pop("ee.wy")
-        wz = action.pop("ee.wz")
-        gripper_pos = action.pop("ee.gripper_pos")
-
-        if None in (x, y, z, wx, wy, wz, gripper_pos):
-            raise ValueError(
-                "Missing required end-effector pose components: ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz, ee.gripper_pos must all be present in action"
-            )
-
-        observation = self.transition.get(TransitionKey.OBSERVATION).copy()
-        if observation is None:
-            raise ValueError("Joints observation is require for computing robot kinematics")
-
-        q_raw = _ordered_joint_positions(observation, self.motor_names)
-
-        # Build desired 4x4 transform from pos + rotvec (twist)
-        t_des = np.eye(4, dtype=float)
-        t_des[:3, :3] = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
-        t_des[:3, 3] = [x, y, z]
-
-        q_target = _solve_best_ik_solution(
+        action, q_target, _, _ = _resolve_joint_action_from_ee_target(
+            action=action,
+            observation=self.transition.get(TransitionKey.OBSERVATION),
             kinematics=self.kinematics,
             motor_names=self.motor_names,
-            current_joint_pos=q_raw,
-            desired_pose=t_des,
             previous_solution=self.q_curr,
             prefer_current_joints=self.initial_guess_current_joints,
             max_joint_delta_deg=self.max_joint_delta_deg,
+            continuous_joint_names=self.continuous_joint_names,
             seed_joint_offsets_deg=self.seed_joint_offsets_deg,
+            seed_joint_sample_offsets_deg=self.seed_joint_sample_offsets_deg,
+            seed_joint_combination_order=self.seed_joint_combination_order,
+            max_seed_combination_candidates=self.max_seed_combination_candidates,
+            joint_position_limits_deg=self.joint_position_limits_deg,
+            prioritize_orientation=self.prioritize_orientation,
             position_tolerance_m=self.position_tolerance_m,
             orientation_tolerance_rad=self.orientation_tolerance_rad,
             fallback_to_current_joints_on_invalid=self.fallback_to_current_joints_on_invalid,
         )
         self.q_curr = q_target
-
-        # TODO: This is sentitive to order of motor_names = q_target mapping
-        for i, name in enumerate(self.motor_names):
-            if name != "gripper":
-                action[f"{name}.pos"] = float(q_target[i])
-            else:
-                action["gripper.pos"] = float(gripper_pos)
 
         return action
 
@@ -627,17 +947,18 @@ class GripperVelocityToJoint(RobotActionProcessorStep):
     discrete_gripper: bool = False
 
     def action(self, action: RobotAction) -> RobotAction:
-        observation = self.transition.get(TransitionKey.OBSERVATION).copy()
+        observation = self.transition.get(TransitionKey.OBSERVATION)
 
         gripper_vel = action.pop("ee.gripper_vel")
 
         if observation is None:
             raise ValueError("Joints observation is require for computing robot kinematics")
+        observation = observation.copy()
 
         if "gripper.pos" not in observation:
             raise ValueError("Joints observation must include 'gripper.pos' for gripper velocity integration")
 
-        gripper_curr = float(observation["gripper.pos"])
+        gripper_curr = float(_finite_array([observation["gripper.pos"]], name="gripper position", shape=(1,))[0])
 
         if self.discrete_gripper:
             # Discrete gripper actions are in [0, 1, 2]
@@ -796,9 +1117,17 @@ class InverseKinematicsRLStep(ProcessorStep):
     q_curr: np.ndarray | None = field(default=None, init=False, repr=False)
     initial_guess_current_joints: bool = True
     max_joint_delta_deg: float | dict[str, float] | None = 35.0
+    continuous_joint_names: Sequence[str] = ()
     seed_joint_offsets_deg: float | dict[str, float] | None = field(
         default_factory=lambda: DEFAULT_SO_ARM_IK_SEED_OFFSETS_DEG.copy()
     )
+    seed_joint_sample_offsets_deg: dict[str, Sequence[float]] | None = field(
+        default_factory=lambda: {k: list(v) for k, v in DEFAULT_SO_ARM_IK_SEED_SAMPLE_OFFSETS_DEG.items()}
+    )
+    seed_joint_combination_order: int = DEFAULT_SO_ARM_IK_SEED_COMBINATION_ORDER
+    max_seed_combination_candidates: int = DEFAULT_SO_ARM_IK_MAX_SEED_COMBINATION_CANDIDATES
+    joint_position_limits_deg: dict[str, tuple[float, float]] | None = None
+    prioritize_orientation: bool = True
     position_tolerance_m: float = 0.02
     orientation_tolerance_rad: float = 0.35
     fallback_to_current_joints_on_invalid: bool = True
@@ -808,57 +1137,44 @@ class InverseKinematicsRLStep(ProcessorStep):
         action = new_transition.get(TransitionKey.ACTION)
         if action is None:
             raise ValueError("Action is required for InverseKinematicsEEToJoints")
-        action = dict(action)
-
-        x = action.pop("ee.x")
-        y = action.pop("ee.y")
-        z = action.pop("ee.z")
-        wx = action.pop("ee.wx")
-        wy = action.pop("ee.wy")
-        wz = action.pop("ee.wz")
-        gripper_pos = action.pop("ee.gripper_pos")
-
-        if None in (x, y, z, wx, wy, wz, gripper_pos):
-            raise ValueError(
-                "Missing required end-effector pose components: ee.x, ee.y, ee.z, ee.wx, ee.wy, ee.wz, ee.gripper_pos must all be present in action"
-            )
-
-        observation = new_transition.get(TransitionKey.OBSERVATION).copy()
-        if observation is None:
-            raise ValueError("Joints observation is require for computing robot kinematics")
-
-        q_raw = _ordered_joint_positions(observation, self.motor_names)
-
-        # Build desired 4x4 transform from pos + rotvec (twist)
-        t_des = np.eye(4, dtype=float)
-        t_des[:3, :3] = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
-        t_des[:3, 3] = [x, y, z]
-
-        q_target = _solve_best_ik_solution(
+        action, q_target, q_raw_target, diagnostics = _resolve_joint_action_from_ee_target(
+            action=action,
+            observation=new_transition.get(TransitionKey.OBSERVATION),
             kinematics=self.kinematics,
             motor_names=self.motor_names,
-            current_joint_pos=q_raw,
-            desired_pose=t_des,
             previous_solution=self.q_curr,
             prefer_current_joints=self.initial_guess_current_joints,
             max_joint_delta_deg=self.max_joint_delta_deg,
+            continuous_joint_names=self.continuous_joint_names,
             seed_joint_offsets_deg=self.seed_joint_offsets_deg,
+            seed_joint_sample_offsets_deg=self.seed_joint_sample_offsets_deg,
+            seed_joint_combination_order=self.seed_joint_combination_order,
+            max_seed_combination_candidates=self.max_seed_combination_candidates,
+            joint_position_limits_deg=self.joint_position_limits_deg,
+            prioritize_orientation=self.prioritize_orientation,
             position_tolerance_m=self.position_tolerance_m,
             orientation_tolerance_rad=self.orientation_tolerance_rad,
             fallback_to_current_joints_on_invalid=self.fallback_to_current_joints_on_invalid,
         )
         self.q_curr = q_target
 
-        # TODO: This is sentitive to order of motor_names = q_target mapping
-        for i, name in enumerate(self.motor_names):
-            if name != "gripper":
-                action[f"{name}.pos"] = float(q_target[i])
-            else:
-                action["gripper.pos"] = float(gripper_pos)
-
         new_transition[TransitionKey.ACTION] = action
         complementary_data = new_transition.get(TransitionKey.COMPLEMENTARY_DATA, {})
         complementary_data["IK_solution"] = q_target
+        complementary_data["IK_raw_solution"] = q_raw_target
+        complementary_data["IK_diagnostics"] = [
+            {
+                "position_error_m": float(item["position_error_m"]),
+                "orientation_error_rad": float(item["orientation_error_rad"]),
+                "max_joint_delta_deg": float(item["max_joint_delta_deg"]),
+                "max_over_limit_deg": float(item["max_over_limit_deg"]),
+                "min_joint_limit_margin_deg": float(item["min_joint_limit_margin_deg"]),
+                "max_joint_limit_violation_deg": float(item["max_joint_limit_violation_deg"]),
+                "is_unsafe": bool(item["is_unsafe"]),
+                "pose_invalid": bool(item["pose_invalid"]),
+            }
+            for item in diagnostics[:10]
+        ]
         new_transition[TransitionKey.COMPLEMENTARY_DATA] = complementary_data
         return new_transition
 
