@@ -62,6 +62,7 @@ DEFAULT_GRIPPER_POS = 30.0
 DEFAULT_USE_ORIENTATION = False
 DEFAULT_FPS = 30
 DEFAULT_INTERPOLATION_STEPS = 24
+DEFAULT_IK_GAIN = 0.5
 MAX_JOINT_STEP_DEG = 8.0
 IK_CANDIDATE_LIMIT = 5
 POSITION_CONVERGENCE_CM = 1.0
@@ -80,13 +81,14 @@ NEAR_TARGET_TRACKING_MAX_JOINT_STEP_DEG = 2.5
 NEAR_TARGET_HEAVY_TRACKING_MAX_JOINT_STEP_DEG = 1.5
 VERY_NEAR_TARGET_MAX_JOINT_STEP_DEG = 2.0
 VERY_NEAR_TARGET_TRACKING_MAX_JOINT_STEP_DEG = 1.0
-DEFAULT_MAX_SERVO_CYCLES = 240
-DEFAULT_REPLAN_INTERVAL = 40
+DEFAULT_MAX_SERVO_CYCLES = 150
+DEFAULT_REPLAN_INTERVAL = 30
 DEFAULT_LOG_INTERVAL = 30
 TARGET_HOLD_TIME_S = 3.0
 DEFAULT_FIXED_GOAL_DIAGNOSTIC_SECONDS = 0.0
 DEFAULT_FINAL_TRIM_DIAGNOSTIC = False
-DEFAULT_APPLY_FINAL_TRIM = True
+DEFAULT_APPLY_FINAL_TRIM = False
+DEFAULT_ORIENTATION_ONLY = False
 FINAL_TRIM_SETTLE_SECONDS = 1.5
 FAR_TARGET_ERROR_CM = 12.0
 FAR_TARGET_MAX_JOINT_STEP_DEG = 12.0
@@ -276,15 +278,38 @@ def pose_error_score_cm(current_pose: np.ndarray, target_pose: np.ndarray, *, us
     return float(score)
 
 
-def candidate_pose_error_score_cm(*, pos_err_m: float, ori_err_rad: float, use_orientation: bool) -> float:
-    score = float(pos_err_m) * 100.0
+def task_error_from_components_cm(
+    position_error_cm_value: float,
+    orientation_error_rad_value: float,
+    *,
+    use_orientation: bool,
+    ignore_position: bool,
+) -> float:
+    score = 0.0 if ignore_position else float(position_error_cm_value)
     if use_orientation:
-        score += float(ori_err_rad) * (POSITION_CONVERGENCE_CM / ORIENTATION_CONVERGENCE_RAD)
+        score += float(orientation_error_rad_value) * (POSITION_CONVERGENCE_CM / ORIENTATION_CONVERGENCE_RAD)
     return float(score)
 
 
-def target_reached(current_pose: np.ndarray, target_pose: np.ndarray, *, use_orientation: bool) -> bool:
-    if position_error_cm(current_pose, target_pose) > POSITION_CONVERGENCE_CM:
+def candidate_pose_error_score_cm(
+    *, pos_err_m: float, ori_err_rad: float, use_orientation: bool, ignore_position: bool = False
+) -> float:
+    return task_error_from_components_cm(
+        float(pos_err_m) * 100.0,
+        float(ori_err_rad),
+        use_orientation=use_orientation,
+        ignore_position=ignore_position,
+    )
+
+
+def target_reached(
+    current_pose: np.ndarray,
+    target_pose: np.ndarray,
+    *,
+    use_orientation: bool,
+    ignore_position: bool = False,
+) -> bool:
+    if not ignore_position and position_error_cm(current_pose, target_pose) > POSITION_CONVERGENCE_CM:
         return False
     if use_orientation and orientation_error_rad(current_pose, target_pose) > ORIENTATION_CONVERGENCE_RAD:
         return False
@@ -293,7 +318,10 @@ def target_reached(current_pose: np.ndarray, target_pose: np.ndarray, *, use_ori
 
 def target_requests_orientation(args: argparse.Namespace) -> bool:
     return bool(
-        args.use_orientation or args.target_rotvec is not None or args.target_delta_rotvec is not None
+        args.use_orientation
+        or args.orientation_only
+        or args.target_rotvec is not None
+        or args.target_delta_rotvec is not None
     )
 
 
@@ -524,6 +552,7 @@ def solve_argo_ik_candidates(
     argo_joint_names: list[str],
     gripper_pos: float,
     use_orientation: bool,
+    ignore_position: bool,
     gain: float,
     iterations: int,
 ) -> list[dict[str, Any]]:
@@ -634,6 +663,7 @@ def solve_argo_ik_candidates(
                     pos_err_m=float(item["pos_err"]),
                     ori_err_rad=float(item["ori_err"]),
                     use_orientation=True,
+                    ignore_position=ignore_position,
                 ),
                 float(item["ori_err"]),
                 float(item["joint_delta_deg"]),
@@ -924,10 +954,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--target-link", default=ARGO_TARGET_LINK_NAME)
     parser.add_argument("--gripper", type=float, default=DEFAULT_GRIPPER_POS)
     parser.add_argument("--use-orientation", action="store_true", default=DEFAULT_USE_ORIENTATION)
+    parser.add_argument(
+        "--orientation-only",
+        action="store_true",
+        default=DEFAULT_ORIENTATION_ONLY,
+        help="Ignore end-effector position error and evaluate progress/completion using orientation only.",
+    )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
     parser.add_argument("--steps", type=int, default=DEFAULT_INTERPOLATION_STEPS)
-    parser.add_argument("--ik-gain", type=float, default=0.8)
+    parser.add_argument("--ik-gain", type=float, default=DEFAULT_IK_GAIN)
     parser.add_argument("--ik-iterations", type=int, default=50)
     parser.add_argument("--max-joint-step-deg", type=float, default=MAX_JOINT_STEP_DEG)
     parser.add_argument("--max-servo-cycles", type=int, default=DEFAULT_MAX_SERVO_CYCLES)
@@ -949,7 +985,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--apply-final-trim",
         action="store_true",
         default=DEFAULT_APPLY_FINAL_TRIM,
-        help="Apply the validated final joint trim compensation to the IK goal before execution.",
+        help="Apply the final joint trim compensation to the IK goal before execution.",
     )
     parser.add_argument(
         "--no-final-trim",
@@ -988,6 +1024,7 @@ def main() -> None:
         start_pose = kin.forward_kinematics(robot_model, q_start, target_link_name=args.target_link)
         target_pose = build_target_pose(start_pose, args)
         use_orientation = target_requests_orientation(args)
+        ignore_position = bool(args.orientation_only)
 
         print("Argo movable joint order:", ", ".join(argo_joint_names))
         print("Current joints:", format_q_deg(q_start, argo_joint_names))
@@ -995,13 +1032,20 @@ def main() -> None:
         print_pose("Target       :", target_pose)
         print(f"Mode: {'EXECUTE' if args.execute else 'DRY-RUN'}")
         print(f"Orientation IK: {'enabled' if use_orientation else 'disabled'}")
+        if ignore_position:
+            print("Task mode: orientation-only (position error ignored in scoring and completion checks)")
 
         current_obs = observation
         current_q = q_start
         current_pose = start_pose
         current_error_cm = position_error_cm(current_pose, target_pose)
         current_orientation_error = orientation_error_rad(current_pose, target_pose) if use_orientation else 0.0
-        best_pose_score = pose_error_score_cm(current_pose, target_pose, use_orientation=use_orientation)
+        best_pose_score = task_error_from_components_cm(
+            current_error_cm,
+            current_orientation_error,
+            use_orientation=use_orientation,
+            ignore_position=ignore_position,
+        )
         stale_steps = 0
         q_goal = None
         target_action = None
@@ -1021,6 +1065,7 @@ def main() -> None:
                 argo_joint_names=argo_joint_names,
                 gripper_pos=float(args.gripper),
                 use_orientation=use_orientation,
+                ignore_position=ignore_position,
                 gain=float(args.ik_gain),
                 iterations=int(args.ik_iterations),
             )
@@ -1095,7 +1140,7 @@ def main() -> None:
                 gripper_pos=float(current_obs["gripper.pos"]),
             )
             max_joint_step_deg = choose_max_joint_step_deg(
-                current_error_cm,
+                best_pose_score,
                 float(args.max_joint_step_deg),
                 use_orientation=use_orientation,
                 orientation_error_rad=current_orientation_error,
@@ -1159,13 +1204,13 @@ def main() -> None:
             f"fps={float(args.fps):.1f}"
         )
         for servo_cycle in range(1, int(args.max_servo_cycles) + 1):
-            current_replan_interval = choose_replan_interval(current_error_cm, int(args.replan_interval))
-            current_progress_threshold_cm = choose_progress_threshold_cm(current_error_cm)
-            current_max_stale_steps = choose_max_stale_steps(current_error_cm)
+            current_replan_interval = choose_replan_interval(best_pose_score, int(args.replan_interval))
+            current_progress_threshold_cm = choose_progress_threshold_cm(best_pose_score)
+            current_max_stale_steps = choose_max_stale_steps(best_pose_score)
 
             if servo_cycle == 1 or servo_cycle % current_replan_interval == 0:
                 if should_pause_replan(
-                    current_error_cm=current_error_cm,
+                    current_error_cm=best_pose_score,
                     tracking_error_deg=tracking_error_deg,
                     has_existing_goal=target_action is not None,
                     tracking_wait_cycles=tracking_wait_cycles,
@@ -1187,7 +1232,7 @@ def main() -> None:
                     planned_q_goal, planned_target_action = plan_from_current_state(
                         print_diagnostics=bool(args.verbose_candidates),
                     )
-                    blend_alpha = choose_goal_blend_alpha(current_error_cm, tracking_error_deg)
+                    blend_alpha = choose_goal_blend_alpha(best_pose_score, tracking_error_deg)
                     q_goal = clip_q_to_argo_limits(
                         robot_model,
                         blend_q_goal(
@@ -1212,19 +1257,19 @@ def main() -> None:
                         )
 
             current_max_joint_step_deg = choose_max_joint_step_deg(
-                current_error_cm,
+                best_pose_score,
                 float(args.max_joint_step_deg),
                 use_orientation=use_orientation,
                 orientation_error_rad=current_orientation_error,
                 tracking_error_deg=tracking_error_deg,
             )
             if should_hold_servo_command(
-                current_error_cm=current_error_cm,
+                current_error_cm=best_pose_score,
                 tracking_error_deg=tracking_error_deg,
                 has_previous_command=last_commanded_action is not None,
                 servo_hold_cycles=servo_hold_cycles,
             ):
-                if current_error_cm <= VERY_NEAR_TARGET_ERROR_CM and target_action is not None:
+                if best_pose_score <= VERY_NEAR_TARGET_ERROR_CM and target_action is not None:
                     servo_action_target = dict(target_action)
                 else:
                     servo_action_target = dict(last_commanded_action)
@@ -1263,7 +1308,12 @@ def main() -> None:
             reached_pose = kin.forward_kinematics(robot_model, reached_q, target_link_name=args.target_link)
             reached_error_cm = position_error_cm(reached_pose, target_pose)
             reached_orientation_error = orientation_error_rad(reached_pose, target_pose) if use_orientation else 0.0
-            reached_pose_score = pose_error_score_cm(reached_pose, target_pose, use_orientation=use_orientation)
+            reached_pose_score = task_error_from_components_cm(
+                reached_error_cm,
+                reached_orientation_error,
+                use_orientation=use_orientation,
+                ignore_position=ignore_position,
+            )
             commanded_q = robot_action_to_argo_q_rad(commanded_action, argo_joint_names)
             tracking_error_deg = max_arm_tracking_error_deg(
                 commanded_q_rad=commanded_q,
@@ -1293,9 +1343,17 @@ def main() -> None:
                     ),
                 )
 
-            if target_reached(reached_pose, target_pose, use_orientation=use_orientation):
+            if target_reached(
+                reached_pose,
+                target_pose,
+                use_orientation=use_orientation,
+                ignore_position=ignore_position,
+            ):
                 if use_orientation:
-                    print("Target reached within position and orientation tolerance.")
+                    if ignore_position:
+                        print("Target reached within orientation tolerance (position ignored).")
+                    else:
+                        print("Target reached within position and orientation tolerance.")
                 else:
                     print("Target reached within position tolerance.")
                 hold_current_pose(
@@ -1306,8 +1364,8 @@ def main() -> None:
                 )
                 break
 
-            progress_cm = best_pose_score - reached_pose_score
-            if progress_cm >= current_progress_threshold_cm:
+            task_progress_score = best_pose_score - reached_pose_score
+            if task_progress_score >= current_progress_threshold_cm:
                 best_pose_score = reached_pose_score
                 stale_steps = 0
             elif tracking_error_deg > TRACKING_SETTLE_DEG:
@@ -1321,11 +1379,18 @@ def main() -> None:
             else:
                 tracking_wait_cycles = 0
                 stale_steps += 1
-                print(
-                    f"Measured progress {progress_cm:.2f}cm is below threshold "
-                    f"{current_progress_threshold_cm:.2f}cm "
-                    f"(stale {stale_steps}/{current_max_stale_steps})."
-                )
+                if ignore_position:
+                    print(
+                        f"Measured task progress {task_progress_score:.2f} score is below threshold "
+                        f"{current_progress_threshold_cm:.2f} score "
+                        f"(stale {stale_steps}/{current_max_stale_steps})."
+                    )
+                else:
+                    print(
+                        f"Measured progress {task_progress_score:.2f}cm is below threshold "
+                        f"{current_progress_threshold_cm:.2f}cm "
+                        f"(stale {stale_steps}/{current_max_stale_steps})."
+                    )
                 if stale_steps >= current_max_stale_steps:
                     print("Stopping because progress stayed below threshold for too many control steps.")
                     break

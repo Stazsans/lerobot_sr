@@ -14,6 +14,7 @@ SPEC.loader.exec_module(argo_real_ik)
 def make_args(**overrides):
     defaults = {
         "use_orientation": False,
+        "orientation_only": False,
         "target_rotvec": None,
         "target_delta_rotvec": None,
         "target_x_cm": None,
@@ -57,6 +58,7 @@ def test_build_target_pose_supports_delta_target_rotvec_from_current_orientation
 def test_target_requests_orientation_when_pose_target_includes_rotvec():
     assert argo_real_ik.target_requests_orientation(make_args(target_rotvec=[0.0, 0.0, 0.1])) is True
     assert argo_real_ik.target_requests_orientation(make_args(target_delta_rotvec=[0.0, 0.0, 0.0])) is True
+    assert argo_real_ik.target_requests_orientation(make_args(orientation_only=True)) is True
     assert argo_real_ik.target_requests_orientation(make_args()) is False
 
 
@@ -69,6 +71,20 @@ def test_target_reached_requires_orientation_when_enabled():
     assert argo_real_ik.target_reached(current_pose, target_pose, use_orientation=True) is False
 
 
+def test_target_reached_can_ignore_position_when_orientation_only():
+    current_pose = np.eye(4, dtype=float)
+    current_pose[:3, 3] = np.array([0.2, 0.0, 0.0])
+    target_pose = np.eye(4, dtype=float)
+    target_pose[:3, :3] = argo_real_ik.Rotation.from_rotvec([0.0, 0.0, 0.02]).as_matrix()
+
+    assert argo_real_ik.target_reached(
+        current_pose,
+        target_pose,
+        use_orientation=True,
+        ignore_position=True,
+    ) is True
+
+
 def test_parse_args_accepts_rotvec_targets():
     args = argo_real_ik.parse_args(
         ["--target-rotvec", "0.1", "0.2", "0.3", "--target-delta-rotvec", "0.0", "0.0", "0.1"]
@@ -76,6 +92,27 @@ def test_parse_args_accepts_rotvec_targets():
 
     assert args.target_rotvec == [0.1, 0.2, 0.3]
     assert args.target_delta_rotvec == [0.0, 0.0, 0.1]
+
+
+def test_parse_args_uses_updated_servo_defaults():
+    args = argo_real_ik.parse_args([])
+
+    assert args.max_servo_cycles == 150
+    assert args.replan_interval == 30
+    assert args.ik_gain == 0.5
+    assert args.apply_final_trim is False
+
+
+def test_parse_args_can_enable_final_trim_explicitly():
+    args = argo_real_ik.parse_args(["--apply-final-trim"])
+
+    assert args.apply_final_trim is True
+
+
+def test_parse_args_can_enable_orientation_only():
+    args = argo_real_ik.parse_args(["--orientation-only"])
+
+    assert args.orientation_only is True
 
 
 def test_choose_max_joint_step_deg_accepts_explicit_tracking_error_kwarg():
@@ -127,6 +164,17 @@ def test_candidate_pose_error_score_cm_penalizes_orientation_when_enabled():
     )
 
     assert better_orientation < worse_orientation
+
+
+def test_candidate_pose_error_score_cm_can_ignore_position():
+    score = argo_real_ik.candidate_pose_error_score_cm(
+        pos_err_m=0.25,
+        ori_err_rad=0.01,
+        use_orientation=True,
+        ignore_position=True,
+    )
+
+    assert abs(score - 0.1) < 1e-9
 
 
 def test_orientation_candidate_sort_prefers_better_pose_score_over_better_position_only():
