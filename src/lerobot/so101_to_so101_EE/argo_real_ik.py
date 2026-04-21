@@ -37,6 +37,7 @@ from typing import Any
 import numpy as np
 
 from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
+from lerobot.utils.rotation import Rotation
 from lerobot.utils.robot_utils import precise_sleep
 
 FOLLOWER_PORT = "/dev/ttyACM0"
@@ -64,6 +65,7 @@ DEFAULT_INTERPOLATION_STEPS = 24
 MAX_JOINT_STEP_DEG = 8.0
 IK_CANDIDATE_LIMIT = 5
 POSITION_CONVERGENCE_CM = 1.0
+ORIENTATION_CONVERGENCE_RAD = 0.10
 MIN_PROGRESS_CM = 0.2
 MAX_STALE_STEPS = 8
 TRACKING_SETTLE_DEG = 3.0
@@ -252,22 +254,86 @@ def arm_joint_delta_deg(
 
 def print_pose(prefix: str, pose: np.ndarray) -> None:
     x, y, z = pose[:3, 3] * 100.0
-    print(f"{prefix} x={x:+.2f}cm y={y:+.2f}cm z={z:+.2f}cm")
+    wx, wy, wz = Rotation.from_matrix(pose[:3, :3]).as_rotvec()
+    print(f"{prefix} x={x:+.2f}cm y={y:+.2f}cm z={z:+.2f}cm wx={wx:+.4f} wy={wy:+.4f} wz={wz:+.4f}")
 
 
 def position_error_cm(current_pose: np.ndarray, target_pose: np.ndarray) -> float:
     return float(np.linalg.norm(target_pose[:3, 3] - current_pose[:3, 3]) * 100.0)
 
 
+def orientation_error_rad(current_pose: np.ndarray, target_pose: np.ndarray) -> float:
+    rotation_error = target_pose[:3, :3] @ current_pose[:3, :3].T
+    return float(np.linalg.norm(Rotation.from_matrix(rotation_error).as_rotvec()))
+
+
+def pose_error_score_cm(current_pose: np.ndarray, target_pose: np.ndarray, *, use_orientation: bool) -> float:
+    score = position_error_cm(current_pose, target_pose)
+    if use_orientation:
+        score += orientation_error_rad(current_pose, target_pose) * (
+            POSITION_CONVERGENCE_CM / ORIENTATION_CONVERGENCE_RAD
+        )
+    return float(score)
+
+
+def candidate_pose_error_score_cm(*, pos_err_m: float, ori_err_rad: float, use_orientation: bool) -> float:
+    score = float(pos_err_m) * 100.0
+    if use_orientation:
+        score += float(ori_err_rad) * (POSITION_CONVERGENCE_CM / ORIENTATION_CONVERGENCE_RAD)
+    return float(score)
+
+
+def target_reached(current_pose: np.ndarray, target_pose: np.ndarray, *, use_orientation: bool) -> bool:
+    if position_error_cm(current_pose, target_pose) > POSITION_CONVERGENCE_CM:
+        return False
+    if use_orientation and orientation_error_rad(current_pose, target_pose) > ORIENTATION_CONVERGENCE_RAD:
+        return False
+    return True
+
+
+def target_requests_orientation(args: argparse.Namespace) -> bool:
+    return bool(
+        args.use_orientation or args.target_rotvec is not None or args.target_delta_rotvec is not None
+    )
+
+
+def build_target_pose(start_pose: np.ndarray, args: argparse.Namespace) -> np.ndarray:
+    target_pose = np.array(start_pose, dtype=float, copy=True)
+    if args.target_x_cm is not None:
+        target_pose[0, 3] = args.target_x_cm / 100.0
+    if args.target_y_cm is not None:
+        target_pose[1, 3] = args.target_y_cm / 100.0
+    if args.target_z_cm is not None:
+        target_pose[2, 3] = args.target_z_cm / 100.0
+    if args.target_x_cm is None and args.target_y_cm is None and args.target_z_cm is None:
+        target_pose[:3, 3] += np.asarray(args.target_delta_cm, dtype=float) / 100.0
+
+    if args.target_rotvec is not None:
+        target_pose[:3, :3] = Rotation.from_rotvec(np.asarray(args.target_rotvec, dtype=float)).as_matrix()
+    if args.target_delta_rotvec is not None:
+        target_pose[:3, :3] = target_pose[:3, :3] @ Rotation.from_rotvec(
+            np.asarray(args.target_delta_rotvec, dtype=float)
+        ).as_matrix()
+    return target_pose
+
+
 def choose_max_joint_step_deg(
     current_error_cm: float,
     default_max_joint_step_deg: float,
     *,
+    use_orientation: bool,
+    orientation_error_rad: float,
     tracking_error_deg: float,
 ) -> float:
-    if current_error_cm <= NEAR_TARGET_ERROR_CM:
+    near_target = current_error_cm <= NEAR_TARGET_ERROR_CM and (
+        not use_orientation or orientation_error_rad <= ORIENTATION_CONVERGENCE_RAD
+    )
+    very_near_target = current_error_cm <= VERY_NEAR_TARGET_ERROR_CM and (
+        not use_orientation or orientation_error_rad <= ORIENTATION_CONVERGENCE_RAD
+    )
+    if near_target:
         step_deg = min(default_max_joint_step_deg, NEAR_TARGET_MAX_JOINT_STEP_DEG)
-        if current_error_cm <= VERY_NEAR_TARGET_ERROR_CM:
+        if very_near_target:
             step_deg = min(step_deg, VERY_NEAR_TARGET_MAX_JOINT_STEP_DEG)
             if tracking_error_deg >= TRACKING_SETTLE_DEG:
                 return min(step_deg, VERY_NEAR_TARGET_TRACKING_MAX_JOINT_STEP_DEG)
@@ -561,14 +627,28 @@ def solve_argo_ik_candidates(
                         "error": f"{type(exc).__name__}: {exc}",
                     }
                 )
-    candidates.sort(
-        key=lambda item: (
-            float(item["pos_err"]),
-            float(item["joint_delta_deg"]),
-            float(item["limit_violation"]),
-            float(item["ori_err"]),
+    if use_orientation:
+        candidates.sort(
+            key=lambda item: (
+                candidate_pose_error_score_cm(
+                    pos_err_m=float(item["pos_err"]),
+                    ori_err_rad=float(item["ori_err"]),
+                    use_orientation=True,
+                ),
+                float(item["ori_err"]),
+                float(item["joint_delta_deg"]),
+                float(item["limit_violation"]),
+            )
         )
-    )
+    else:
+        candidates.sort(
+            key=lambda item: (
+                float(item["pos_err"]),
+                float(item["joint_delta_deg"]),
+                float(item["limit_violation"]),
+                float(item["ori_err"]),
+            )
+        )
     return candidates
 
 
@@ -817,7 +897,7 @@ def choose_final_trim_offsets_deg(target_pose: np.ndarray) -> dict[str, float]:
     }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=FOLLOWER_PORT)
     parser.add_argument("--id", default=FOLLOWER_ID)
@@ -825,6 +905,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-x-cm", type=float, default=None)
     parser.add_argument("--target-y-cm", type=float, default=None)
     parser.add_argument("--target-z-cm", type=float, default=None)
+    parser.add_argument(
+        "--target-rotvec",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("WX", "WY", "WZ"),
+        help="Absolute target orientation as a rotation vector in radians.",
+    )
+    parser.add_argument(
+        "--target-delta-rotvec",
+        nargs=3,
+        type=float,
+        default=None,
+        metavar=("DWX", "DWY", "DWZ"),
+        help="Orientation delta applied on top of the current or absolute target orientation, in radians.",
+    )
     parser.add_argument("--target-link", default=ARGO_TARGET_LINK_NAME)
     parser.add_argument("--gripper", type=float, default=DEFAULT_GRIPPER_POS)
     parser.add_argument("--use-orientation", action="store_true", default=DEFAULT_USE_ORIENTATION)
@@ -862,7 +958,7 @@ def parse_args() -> argparse.Namespace:
         help="Disable the default final joint trim compensation.",
     )
     parser.add_argument("--verbose-candidates", action="store_true")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
@@ -890,27 +986,22 @@ def main() -> None:
         observation = robot.get_observation()
         q_start = observation_to_argo_q_rad(observation, argo_joint_names)
         start_pose = kin.forward_kinematics(robot_model, q_start, target_link_name=args.target_link)
-        target_pose = start_pose.copy()
-        if args.target_x_cm is not None:
-            target_pose[0, 3] = args.target_x_cm / 100.0
-        if args.target_y_cm is not None:
-            target_pose[1, 3] = args.target_y_cm / 100.0
-        if args.target_z_cm is not None:
-            target_pose[2, 3] = args.target_z_cm / 100.0
-        if args.target_x_cm is None and args.target_y_cm is None and args.target_z_cm is None:
-            target_pose[:3, 3] += np.asarray(args.target_delta_cm, dtype=float) / 100.0
+        target_pose = build_target_pose(start_pose, args)
+        use_orientation = target_requests_orientation(args)
 
         print("Argo movable joint order:", ", ".join(argo_joint_names))
         print("Current joints:", format_q_deg(q_start, argo_joint_names))
         print_pose("Current Argo FK:", start_pose)
         print_pose("Target       :", target_pose)
         print(f"Mode: {'EXECUTE' if args.execute else 'DRY-RUN'}")
+        print(f"Orientation IK: {'enabled' if use_orientation else 'disabled'}")
 
         current_obs = observation
         current_q = q_start
         current_pose = start_pose
         current_error_cm = position_error_cm(current_pose, target_pose)
-        best_error_cm = current_error_cm
+        current_orientation_error = orientation_error_rad(current_pose, target_pose) if use_orientation else 0.0
+        best_pose_score = pose_error_score_cm(current_pose, target_pose, use_orientation=use_orientation)
         stale_steps = 0
         q_goal = None
         target_action = None
@@ -929,7 +1020,7 @@ def main() -> None:
                 target_link_name=args.target_link,
                 argo_joint_names=argo_joint_names,
                 gripper_pos=float(args.gripper),
-                use_orientation=bool(args.use_orientation),
+                use_orientation=use_orientation,
                 gain=float(args.ik_gain),
                 iterations=int(args.ik_iterations),
             )
@@ -988,7 +1079,13 @@ def main() -> None:
             )
             return planned_q_goal, planned_target_action
 
-        print(f"Initial target error: {current_error_cm:.2f}cm")
+        if use_orientation:
+            print(
+                f"Initial target error: pos={current_error_cm:.2f}cm "
+                f"ori={current_orientation_error:.4f}rad score={best_pose_score:.2f}"
+            )
+        else:
+            print(f"Initial target error: {current_error_cm:.2f}cm")
         q_goal, target_action = plan_from_current_state(print_diagnostics=True)
 
         if not args.execute:
@@ -997,7 +1094,13 @@ def main() -> None:
                 argo_joint_names,
                 gripper_pos=float(current_obs["gripper.pos"]),
             )
-            max_joint_step_deg = choose_max_joint_step_deg(current_error_cm, float(args.max_joint_step_deg))
+            max_joint_step_deg = choose_max_joint_step_deg(
+                current_error_cm,
+                float(args.max_joint_step_deg),
+                use_orientation=use_orientation,
+                orientation_error_rad=current_orientation_error,
+                tracking_error_deg=tracking_error_deg,
+            )
             preview_action = next_velocity_limited_action(
                 current_action=start_action,
                 target_action=target_action,
@@ -1008,7 +1111,15 @@ def main() -> None:
             print(f"Preview max joint step: {max_joint_step_deg:.2f}deg")
             print("Preview cmd          :", format_q_deg(preview_q, argo_joint_names))
             print_pose("Preview FK           :", preview_pose)
-            print(f"Predicted preview error: {position_error_cm(preview_pose, target_pose):.2f}cm")
+            preview_error_cm = position_error_cm(preview_pose, target_pose)
+            if use_orientation:
+                preview_orientation_error = orientation_error_rad(preview_pose, target_pose)
+                print(
+                    f"Predicted preview error: pos={preview_error_cm:.2f}cm "
+                    f"ori={preview_orientation_error:.4f}rad"
+                )
+            else:
+                print(f"Predicted preview error: {preview_error_cm:.2f}cm")
             print("Dry-run only. Re-run with --execute to stream continuous servo commands.")
             return
 
@@ -1103,6 +1214,8 @@ def main() -> None:
             current_max_joint_step_deg = choose_max_joint_step_deg(
                 current_error_cm,
                 float(args.max_joint_step_deg),
+                use_orientation=use_orientation,
+                orientation_error_rad=current_orientation_error,
                 tracking_error_deg=tracking_error_deg,
             )
             if should_hold_servo_command(
@@ -1149,6 +1262,8 @@ def main() -> None:
             reached_q = observation_to_argo_q_rad(reached_obs, argo_joint_names)
             reached_pose = kin.forward_kinematics(robot_model, reached_q, target_link_name=args.target_link)
             reached_error_cm = position_error_cm(reached_pose, target_pose)
+            reached_orientation_error = orientation_error_rad(reached_pose, target_pose) if use_orientation else 0.0
+            reached_pose_score = pose_error_score_cm(reached_pose, target_pose, use_orientation=use_orientation)
             commanded_q = robot_action_to_argo_q_rad(commanded_action, argo_joint_names)
             tracking_error_deg = max_arm_tracking_error_deg(
                 commanded_q_rad=commanded_q,
@@ -1156,11 +1271,19 @@ def main() -> None:
                 argo_joint_names=argo_joint_names,
             )
             if servo_cycle == 1 or servo_cycle % int(args.log_interval) == 0:
-                print(
-                    f"Servo cycle {servo_cycle:03d}: error={reached_error_cm:.2f}cm "
-                    f"max_step={current_max_joint_step_deg:.1f}deg "
-                    f"track={tracking_error_deg:.1f}deg"
-                )
+                if use_orientation:
+                    print(
+                        f"Servo cycle {servo_cycle:03d}: pos={reached_error_cm:.2f}cm "
+                        f"ori={reached_orientation_error:.4f}rad "
+                        f"max_step={current_max_joint_step_deg:.1f}deg "
+                        f"track={tracking_error_deg:.1f}deg"
+                    )
+                else:
+                    print(
+                        f"Servo cycle {servo_cycle:03d}: error={reached_error_cm:.2f}cm "
+                        f"max_step={current_max_joint_step_deg:.1f}deg "
+                        f"track={tracking_error_deg:.1f}deg"
+                    )
                 print(
                     "Joint tracking error:",
                     format_joint_tracking_error(
@@ -1170,8 +1293,11 @@ def main() -> None:
                     ),
                 )
 
-            if reached_error_cm <= POSITION_CONVERGENCE_CM:
-                print("Target reached within position tolerance.")
+            if target_reached(reached_pose, target_pose, use_orientation=use_orientation):
+                if use_orientation:
+                    print("Target reached within position and orientation tolerance.")
+                else:
+                    print("Target reached within position tolerance.")
                 hold_current_pose(
                     robot=robot,
                     hold_action=commanded_action,
@@ -1180,9 +1306,9 @@ def main() -> None:
                 )
                 break
 
-            progress_cm = best_error_cm - reached_error_cm
+            progress_cm = best_pose_score - reached_pose_score
             if progress_cm >= current_progress_threshold_cm:
-                best_error_cm = reached_error_cm
+                best_pose_score = reached_pose_score
                 stale_steps = 0
             elif tracking_error_deg > TRACKING_SETTLE_DEG:
                 tracking_wait_cycles += 1
@@ -1211,6 +1337,7 @@ def main() -> None:
             current_q = reached_q
             current_pose = reached_pose
             current_error_cm = reached_error_cm
+            current_orientation_error = reached_orientation_error
 
     finally:
         robot.disconnect()
