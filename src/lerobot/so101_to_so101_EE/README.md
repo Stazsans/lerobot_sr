@@ -16,10 +16,14 @@
 | 文件 | 用途 |
 |------|------|
 | `teleoperate.py` | 遥操作：leader 关节 → FK → EE 指令 → IK → follower 关节 |
+| `argo_teleoperate.py` | Argo 遥操作：leader 关节 → Argo FK → EE 指令 → Argo IK → follower 关节 |
 | `move_to_pose.py` | 单目标/多目标末端位姿验证：直接给 EE pose，经 IK 到达 |
 | `record.py` | 数据采集：遥操作 + 录制 EE 空间数据集（参照 lerobot-record 流程） |
+| `argo_record.py` | Argo 数据采集：使用 Argo FK/IK 遥操作并录制 EE 空间数据集 |
 | `replay.py` | 回放验证：读取本地数据集的 EE 动作并通过 IK 执行 |
+| `argo_replay.py` | Argo 回放验证：读取 Argo EE 数据集并通过 Argo IK 执行 |
 | `evaluate.py` | 异步推理评估：gRPC 策略服务器 + 机器人客户端 |
+| `argo_evaluate.py` | Argo 异步推理评估：使用 Argo FK/IK 语义执行 EE 策略 |
 | `third_party/SO-ARM100/Simulation/SO101/so101_new_calib.urdf` | SO101 运动学模型描述文件，以上脚本默认使用该路径 |
 
 ## 前置准备
@@ -55,6 +59,21 @@
 python src/lerobot/so101_to_so101_EE/teleoperate.py
 ```
 
+Argo FK/IK 版本：
+
+```bash
+python src/lerobot/so101_to_so101_EE/argo_teleoperate.py
+```
+
+添加 `argo_teleoperate.py`
+使用和 `teleoperate.py` 相同的在线遥操作流程：连接 leader/follower、循环读取 leader、计算 follower 动作、直接发送到 follower。区别是 FK/IK 换成 Argo：
+
+```text
+leader joints -> Argo FK -> EE target
+EE target + follower joints -> Argo IK -> follower joint command
+follower joint command -> follower.send_action
+```
+
 ### 2. 数据采集
 
 录制 EE 空间的训练数据，参照 lerobot-record 流程（使用 `record_loop`、`VideoEncodingManager` 等）。
@@ -62,6 +81,21 @@ python src/lerobot/so101_to_so101_EE/teleoperate.py
 
 ```bash
 python src/lerobot/so101_to_so101_EE/record.py
+```
+
+Argo FK/IK 版本：
+
+```bash
+python src/lerobot/so101_to_so101_EE/argo_record.py
+```
+
+添加 `argo_record.py`
+使用和 `record.py` 相同的录制流程：`LeRobotDataset.create`、`record_loop`、`VideoEncodingManager`、键盘控制、episode/reset 逻辑。区别是 processor 换成 Argo：
+
+```text
+leader joints -> Argo FK -> EE action recorded in dataset
+EE action -> Argo IK -> follower joint command
+follower joints -> Argo FK -> EE observation recorded in dataset
 ```
 
 ### 2.5 直接给定末端位姿
@@ -85,6 +119,21 @@ python src/lerobot/so101_to_so101_EE/move_to_pose.py
 
 ```bash
 python src/lerobot/so101_to_so101_EE/replay.py
+```
+
+Argo FK/IK 版本：
+
+```bash
+python src/lerobot/so101_to_so101_EE/argo_replay.py
+```
+
+添加 `argo_replay.py`
+使用和 `replay.py` 相同的回放流程：读取本地 `LeRobotDataset`、选择 episode、逐帧读取 dataset action、按 dataset FPS 下发动作。区别是 EE action 到关节命令的 processor 换成 Argo：
+
+```text
+dataset EE action -> Argo IK -> follower joint command
+follower observation -> current joint seed for Argo IK
+follower joint command -> follower.send_action
 ```
 
 ### 4. 训练
@@ -115,6 +164,21 @@ python -m lerobot.async_inference.policy_server \
 
 ```bash
 python src/lerobot/so101_to_so101_EE/evaluate.py
+```
+
+Argo FK/IK 版本：
+
+```bash
+python src/lerobot/so101_to_so101_EE/argo_evaluate.py
+```
+
+添加 `argo_evaluate.py`
+使用和 `evaluate.py` 相同的异步推理流程：gRPC `PolicyServer`、动作块队列、按需发送观测、控制循环持续执行。区别是客户端侧 FK/IK 换成 Argo：
+
+```text
+follower joints -> Argo FK -> EE observation sent to policy server
+policy server -> EE action chunk
+EE action -> Argo IK -> follower joint command
 ```
 
 评估流程：
